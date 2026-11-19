@@ -25,7 +25,7 @@ The CPU scheduling page shows a time-scaled Gantt chart with individual process 
 
 ## Algorithm descriptions and sample runs
 
-Screenshots are in `docs/`. Every module accepts any number of rows/items; invalid input shows an error message instead of crashing.
+Screenshots are in `docs/`. **Reset** clears every text field in the current module and **Load example** restores the sample data. Every module accepts any number of rows/items; invalid input shows an error message instead of crashing.
 
 ### 1. CPU Scheduling
 **Input:** algorithm, time quantum (Round Robin), and one process per line: `ID,arrival,burst,priority`. **Process:** the ready process is chosen by arrival (FCFS), shortest burst (SJF), shortest remaining time (SRTF), lowest priority number (Priority, both modes) or by rotating time slices (Round Robin); gaps become CPU idle time. **Output:** completion, turnaround (CT-AT), waiting (TAT-BT) and response times, averages, CPU utilization and a Gantt chart.

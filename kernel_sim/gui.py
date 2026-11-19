@@ -796,8 +796,11 @@ class ModulePage(QWidget):
         run.clicked.connect(self.run_simulation)
         example = GlassButton("Load example")
         example.clicked.connect(self.reset_sample)
+        reset = GlassButton("Reset")
+        reset.clicked.connect(self.clear_inputs)
         actions.addWidget(run)
         actions.addWidget(example)
+        actions.addWidget(reset)
         actions.addStretch(1)
         left.addLayout(actions)
         left.addSpacing(10)
@@ -889,6 +892,16 @@ class ModulePage(QWidget):
         if self.gantt is not None:
             self.gantt.clear()
         self._write_output("Example inputs restored. Press Run simulation to view the results.")
+
+    def clear_inputs(self) -> None:
+        """Empty every typable field; dropdowns keep their choice."""
+        for w in self.widgets.values():
+            if isinstance(w, (QPlainTextEdit, QLineEdit)):
+                w.clear()
+        if self.gantt is not None:
+            self.gantt.clear()
+        self._set_status("Inputs cleared", MUTED)
+        self._write_output("All inputs cleared. Enter your own data, or press Load example.")
 
     def _draw_gantt(self, data: dict[str, str]) -> None:
         assert self.gantt is not None
