@@ -14,7 +14,7 @@ from pathlib import Path
 from string import Template
 from typing import Callable
 
-from PySide6.QtCore import Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF, QEvent, QSize, Qt, QVariantAnimation
+from PySide6.QtCore import Property, QEasingCurve, Signal, QPointF, QPropertyAnimation, QRectF, QEvent, QSize, Qt, QVariantAnimation
 from PySide6.QtGui import (QColor, QFont, QFontMetrics, QFontDatabase, QKeySequence, QLinearGradient, QPainter, QPen,
                            QPixmap, QShortcut, QTextCharFormat, QTextCursor)
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFrame, QGraphicsBlurEffect, QGraphicsOpacityEffect,
@@ -43,6 +43,10 @@ class FieldSpec:
     height: int = 6
     hint: str = ""   # dropdown choices, separated by "·"
     help: str = ""   # plain-language explanation shown under the label
+    columns: tuple[str, ...] = ()  # when set, the field is an editable table (RowsEditor) of these columns
+    add_label: str = "+ Add Row"
+    auto_id: str = ""      # new rows pre-fill column 1: "P" -> P1, P2...; "#" -> 0, 1, 2...
+    follow: str = ""       # key of a comma-list field whose item count sets this table's column count
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,7 @@ class ModuleSpec:
     fields: tuple[FieldSpec, ...]
     run: Callable[[dict[str, str]], str]
     gantt: Callable[[dict[str, str]], tuple] | None = None  # -> (intervals, pids, makespan, axis label)
+    preview: Callable[[dict[str, str]], str] | None = None  # live output while the inputs are edited
 
 
 def _int(value: str, label: str) -> int:
@@ -190,6 +195,74 @@ def _gantt_scheduling(data: dict[str, str]) -> tuple:
             f"CPU time ({'minutes' if has_units else 'time units'})")
 
 
+def _preview_scheduling(data: dict[str, str]) -> str:
+    rows = _rows(data["processes"], "Processes")
+    if not rows:
+        return "No processes yet.\n\nOpen Add Input and press + Add Process."
+    table = [[r[0] or "—", *(r + [""] * 4)[1:4], "", "", "", ""] for r in rows]
+    return ("PROCESS TABLE\nFill in the inputs, then press Run simulation to compute CT, TAT, WT and RT "
+            "and draw the Gantt chart.\n\n"
+            + _format_table(["Process", "AT", "BT", "Priority", "CT", "TAT", "WT", "RT"], table))
+
+
+def _echo(title: str, note: str, headers: list[str], rows: list[list[str]], blanks: int = 0) -> str:
+    """Entered rows as an output table; `blanks` trailing columns are the ones Run will compute."""
+    if not rows:
+        return "No rows yet.\n\nOpen Add Input and use the + Add button."
+    k = len(headers) - blanks
+    body = [(r + [""] * k)[:k] + [""] * blanks for r in rows]
+    for r in body:
+        r[0] = r[0] or "—"
+    return f"{title}\n{note}\n\n" + _format_table(headers, body)
+
+
+_RUN = "Press Run simulation to compute the blank columns."
+
+
+def _preview_banker(data: dict[str, str]) -> str:
+    ids = [c.strip() for c in data["process_ids"].split(",") if c.strip()]
+    alloc, maxi = _rows(data["allocation"], "Allocation"), _rows(data["maximum"], "Maximum")
+    rows = [[ids[i] if i < len(ids) else "", " ".join(alloc[i]) if i < len(alloc) else "",
+             " ".join(maxi[i]) if i < len(maxi) else ""] for i in range(max(len(ids), len(alloc), len(maxi)))]
+    return _echo("INPUT STATE", _RUN, ["Process", "Allocation", "Maximum", "Need"], rows, 1)
+
+
+def _preview_paging(data: dict[str, str]) -> str:
+    return _echo("PAGE TABLE", "Press Run simulation to translate the logical address.",
+                 ["Page", "Frame"], _rows(data["page_table"], "Page table"))
+
+
+def _preview_page_replacement(data: dict[str, str]) -> str:
+    try:
+        frames = max(0, int(data["frames"]))
+    except ValueError:
+        frames = 0
+    rows = [[str(i + 1), r[0]] for i, r in enumerate(_rows(data["references"], "References"))]
+    return _echo("REFERENCE STRING", _RUN,
+                 ["Step", "Reference", *[f"Frame {i + 1}" for i in range(frames)], "Result", "Replaced"], rows, frames + 2)
+
+
+def _preview_segmentation(data: dict[str, str]) -> str:
+    return _echo("SEGMENT TABLE", "Press Run simulation to translate the address.",
+                 ["Segment", "Base", "Limit"], _rows(data["segments"], "Segment table"))
+
+
+def _preview_fragmentation(data: dict[str, str]) -> str:
+    blocks = [r[0] for r in _rows(data["blocks"], "Blocks")]
+    return _echo("PROCESSES", _RUN + "\nMemory blocks: " + (", ".join(blocks) or "none"),
+                 ["Process", "Requested", "Block", "Block size", "Internal waste"], _rows(data["processes"], "Processes"), 3)
+
+
+def _preview_disk(data: dict[str, str]) -> str:
+    return _echo("REQUEST QUEUE", "Press Run simulation to see the head path and movement.",
+                 ["Order", "Cylinder"], [[str(i + 1), r[0]] for i, r in enumerate(_rows(data["requests"], "Requests"))])
+
+
+def _preview_multiprogramming(data: dict[str, str]) -> str:
+    return _echo("PROGRAMS", _RUN, ["Program", "Arrival", "CPU burst", "Memory MB", "State", "Completion", "Waiting"],
+                 _rows(data["programs"], "Programs"), 3)
+
+
 def _run_banker(data: dict[str, str]) -> str:
     ids, total, result, request_pid, request_status, trace = _banker_eval(data)
     resources = [f"R{i + 1}" for i in range(len(total))]
@@ -312,9 +385,12 @@ MODULES: dict[str, ModuleSpec] = {
             FieldSpec("quantum", "Time quantum (Round Robin)", "2"),
             FieldSpec("processes", "Processes", "P1,0,4,2\nP2,1,2,1\nP3,2,3,3\nP4,3,5,2\nP5,4,6,1\nP6,5,1,2",
                       True, 8,
-                      help="One per line: ID, arrival, burst, priority. Example times: 1 hr/s, 30 min/s."),
+                      help="Press + Add Process, then type each row's arrival, burst and priority. "
+                           "Times accept 1 hr/s or 30 min/s.",
+                      columns=("Process", "Arrival time (AT)", "Burst time (BT)", "Priority"),
+                      add_label="+ Add Process", auto_id="P"),
         ),
-        _run_scheduling, _gantt_scheduling,
+        _run_scheduling, _gantt_scheduling, _preview_scheduling,
     ),
     "Banker's Algorithm": ModuleSpec(
         "Banker's Algorithm",
@@ -323,13 +399,13 @@ MODULES: dict[str, ModuleSpec] = {
             FieldSpec("process_ids", "Process IDs (comma-separated)", "P0,P1,P2,P3,P4"),
             FieldSpec("total", "Total resources (one per type)", "10,5,7"),
             FieldSpec("allocation", "Allocation matrix", "0,1,0\n2,0,0\n3,0,2\n2,1,1\n0,0,2", True, 6,
-                      help="One row per process; one value per resource."),
+                      help="One row per process; one value per resource.", columns=("R1", "R2", "R3"), follow="total"),
             FieldSpec("maximum", "Maximum demand matrix", "7,5,3\n3,2,2\n9,0,2\n2,2,2\n4,3,3", True, 6,
-                      help="Use the same process and resource order as Allocation."),
+                      help="Use the same process and resource order as Allocation.", columns=("R1", "R2", "R3"), follow="total"),
             FieldSpec("request_pid", "Optional request process ID", "", help="Leave blank to run only the safety check."),
             FieldSpec("request", "Optional resource request", "", help="Comma-separated amount per resource, e.g. 1,0,2."),
         ),
-        _run_banker, _gantt_banker,
+        _run_banker, _gantt_banker, _preview_banker,
     ),
     "Paging": ModuleSpec(
         "Paging",
@@ -338,9 +414,9 @@ MODULES: dict[str, ModuleSpec] = {
             FieldSpec("page_size", "Page size", "4"),
             FieldSpec("logical_address", "Logical address", "3"),
             FieldSpec("page_table", "Page table", "0,5\n1,6\n2,3\n3,2", True, 7,
-                      help="One mapping per line: page, frame."),
+                      help="One mapping per line: page, frame.", columns=("Page", "Frame"), add_label="+ Add Page", auto_id="#"),
         ),
-        _run_paging,
+        _run_paging, preview=_preview_paging,
     ),
     "Page Replacement": ModuleSpec(
         "Page Replacement",
@@ -349,9 +425,9 @@ MODULES: dict[str, ModuleSpec] = {
             FieldSpec("algorithm", "Algorithm", "FIFO", hint="FIFO · LRU · Optimal"),
             FieldSpec("frames", "Number of frames", "3"),
             FieldSpec("references", "Page reference string", "7,0,1,2,0,3,0,4,2,3,0,3,2", True, 7,
-                      help="Comma-separated or one page per line."),
+                      help="Comma-separated or one page per line.", columns=("Page reference",), add_label="+ Add Reference"),
         ),
-        _run_page_replacement,
+        _run_page_replacement, preview=_preview_page_replacement,
     ),
     "Segmentation": ModuleSpec(
         "Segmentation",
@@ -360,9 +436,9 @@ MODULES: dict[str, ModuleSpec] = {
             FieldSpec("segment", "Segment number", "1"),
             FieldSpec("offset", "Offset within segment", "399"),
             FieldSpec("segments", "Segment table", "0,1400,1000\n1,6300,400\n2,4300,400\n3,3200,1100\n4,4700,1000", True, 7,
-                      help="One per line: segment, base, limit."),
+                      help="One per line: segment, base, limit.", columns=("Segment", "Base", "Limit"), add_label="+ Add Segment", auto_id="#"),
         ),
-        _run_segmentation,
+        _run_segmentation, preview=_preview_segmentation,
     ),
     "Fragmentation": ModuleSpec(
         "Fragmentation",
@@ -370,11 +446,12 @@ MODULES: dict[str, ModuleSpec] = {
         (
             FieldSpec("mode", "Partition mode", "Variable partitions", hint="Fixed partitions · Variable partitions"),
             FieldSpec("strategy", "Allocation strategy", "First fit", hint="First fit · Best fit · Next fit · Worst fit"),
-            FieldSpec("blocks", "Memory blocks (comma-separated)", "100,500,200,300,600"),
+            FieldSpec("blocks", "Memory blocks", "100,500,200,300,600", True, 7, help="One block size per row.",
+                      columns=("Block size",), add_label="+ Add Block"),
             FieldSpec("processes", "Processes", "P1,212\nP2,417\nP3,112\nP4,426", True, 7,
-                      help="One per line: ID, size."),
+                      help="One per line: ID, size.", columns=("Process", "Size"), add_label="+ Add Process", auto_id="P"),
         ),
-        _run_fragmentation,
+        _run_fragmentation, preview=_preview_fragmentation,
     ),
     "Disk Scheduling": ModuleSpec(
         "Disk Scheduling",
@@ -386,9 +463,9 @@ MODULES: dict[str, ModuleSpec] = {
             FieldSpec("low", "Lowest cylinder", "0"),
             FieldSpec("high", "Highest cylinder", "199"),
             FieldSpec("requests", "Requests", "98,183,37,122,14,124,65,67", True, 7,
-                      help="Comma-separated or one cylinder per line."),
+                      help="Comma-separated or one cylinder per line.", columns=("Cylinder request",), add_label="+ Add Request"),
         ),
-        _run_disk,
+        _run_disk, preview=_preview_disk,
     ),
     "Multiprogramming": ModuleSpec(
         "Multiprogramming",
@@ -397,9 +474,9 @@ MODULES: dict[str, ModuleSpec] = {
             FieldSpec("memory", "Available memory (MB)", "1024"),
             FieldSpec("quantum", "CPU time slice", "2"),
             FieldSpec("programs", "Programs", "A,0,5,400\nB,1,3,300\nC,2,4,500\nD,3,2,256", True, 8,
-                      help="One per line: ID, arrival, CPU burst, memory (MB). Example times: 1 hr/s, 30 min/s."),
+                      help="One per line: ID, arrival, CPU burst, memory (MB). Example times: 1 hr/s, 30 min/s.", columns=("Program", "Arrival time", "CPU burst", "Memory (MB)"), add_label="+ Add Program", auto_id="P"),
         ),
-        _run_multiprogramming,
+        _run_multiprogramming, preview=_preview_multiprogramming,
     ),
 }
 
@@ -749,7 +826,7 @@ class ResultsView(QScrollArea):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-    def show_text(self, content: str, tag: str | None = None) -> None:
+    def show_text(self, content: str, tag: str | None = None, fade: bool = True) -> None:
         host = QWidget()
         col = QVBoxLayout(host)
         col.setContentsMargins(0, 0, 8, 0)
@@ -780,7 +857,8 @@ class ResultsView(QScrollArea):
         flush()
         col.addStretch(1)
         self.setWidget(host)
-        _fade_in(host, 220, 0.3)
+        if fade:
+            _fade_in(host, 220, 0.3)
 
     @staticmethod
     def _text(lines: list[str], tag: str | None) -> QLabel:
@@ -915,6 +993,107 @@ class InputOverlay(QWidget):
             super().keyPressEvent(event)
 
 
+class RowsEditor(QWidget):
+    """Editable table for CSV-style row input. text()/set_text() keep the CSV format the run functions expect."""
+
+    changed = Signal()
+
+    def __init__(self, headers: tuple[str, ...], text: str, add_label: str = "+ Add Row", auto_id: str = "") -> None:
+        super().__init__()
+        self.auto_id = auto_id
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        bar = QHBoxLayout()
+        add = GlassButton(add_label)
+        add.clicked.connect(self.add_row)
+        remove = GlassButton("Remove selected")
+        remove.clicked.connect(self.remove_selected)
+        bar.addWidget(add)
+        bar.addWidget(remove)
+        bar.addStretch(1)
+        lay.addLayout(bar)
+        self.table = QTableWidget(0, len(headers))
+        self.table.setHorizontalHeaderLabels(list(headers))
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setFixedHeight(32)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setFixedHeight(212)
+        if len(headers) == 1:
+            self.table.setMaximumWidth(340)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.cellChanged.connect(lambda *_: self.changed.emit())
+        lay.addWidget(self.table)
+        self.set_text(text)
+
+    def _fill(self, row: int, cells: list[str]) -> None:
+        for c in range(self.table.columnCount()):
+            item = QTableWidgetItem(cells[c] if c < len(cells) else "")
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.table.setItem(row, c, item)
+
+    def add_row(self) -> None:
+        self.table.blockSignals(True)
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        ident = "" if not self.auto_id else str(row) if self.auto_id == "#" else f"{self.auto_id}{row + 1}"
+        self._fill(row, [ident])
+        self.table.blockSignals(False)
+        self.changed.emit()
+        first = 1 if self.auto_id and self.table.columnCount() > 1 else 0
+        self.table.setCurrentCell(row, first)
+        self.table.editItem(self.table.item(row, first))
+
+    def remove_selected(self) -> None:
+        rows = sorted({i.row() for i in self.table.selectedIndexes()} or {self.table.currentRow()}, reverse=True)
+        for r in rows:
+            if r >= 0:
+                self.table.removeRow(r)
+        self.changed.emit()
+
+    def text(self) -> str:
+        out = io.StringIO()
+        writer = csv.writer(out, lineterminator="\n")
+        for r in range(self.table.rowCount()):
+            writer.writerow([(self.table.item(r, c).text() if self.table.item(r, c) else "").strip()
+                             for c in range(self.table.columnCount())])
+        return out.getvalue().strip()
+
+    def set_text(self, text: str) -> None:
+        self.table.blockSignals(True)
+        self.table.setRowCount(0)
+        parsed = _rows(text, "Rows")
+        if self.table.columnCount() == 1:  # a plain list: every value gets its own row
+            parsed = [[v] for row in parsed for v in row if v]
+        for r, cells in enumerate(parsed):
+            self.table.insertRow(r)
+            self._fill(r, cells)
+        self.table.blockSignals(False)
+
+    def clear(self) -> None:
+        self.set_text("")
+
+    def set_columns(self, n: int) -> None:
+        """Resize to n columns headed R1..Rn, keeping the cells that still fit."""
+        old = self.table.columnCount()
+        if n == old:
+            return
+        self.table.blockSignals(True)
+        self.table.setColumnCount(n)
+        self.table.setHorizontalHeaderLabels([f"R{i + 1}" for i in range(n)])
+        for r in range(self.table.rowCount()):
+            for c in range(old, n):
+                self._fill_cell(r, c)
+        self.table.blockSignals(False)
+        self.changed.emit()
+
+    def _fill_cell(self, row: int, col: int) -> None:
+        item = QTableWidgetItem("")
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.table.setItem(row, col, item)
+
+
 class OverviewPage(QScrollArea):
     """Project landing page with the team and a quick module index."""
 
@@ -1029,6 +1208,11 @@ class ModulePage(QWidget):
         span = 3 if len(long) > 1 else 6
         for i, field in enumerate(long):  # tables: two side by side
             grid.addLayout(self._field(field, mono_css), base + i // 2, (i % 2) * 3, 1, span)
+        for f in self.spec.fields:  # tables whose column count follows a comma-list field (e.g. resource types)
+            if f.follow:
+                src, editor = self.widgets[f.follow], self.widgets[f.key]
+                src.textChanged.connect(lambda _=None, src=src, editor=editor: editor.set_columns(
+                    max(1, len([x for x in src.text().split(",") if x.strip()]))))
         self.input_panel.hide()
 
         # ---- full-width results table(s), then the Gantt chart in its own row
@@ -1059,6 +1243,7 @@ class ModulePage(QWidget):
             box.addWidget(strip)
             col.addSpacing(12)
             col.addWidget(chart)
+        self._preview(keep_status=True)
 
     def _field(self, field: FieldSpec, mono_css: str) -> QVBoxLayout:
         group = QVBoxLayout()
@@ -1066,8 +1251,11 @@ class ModulePage(QWidget):
         group.addWidget(_label(field.label, "field"))
         if field.multiline and field.help:
             group.addWidget(_label(field.help, "hint", True))
-        if field.multiline:
-            widget: QWidget = QPlainTextEdit(field.default)
+        if field.columns:
+            widget: QWidget = RowsEditor(field.columns, field.default, field.add_label, field.auto_id)
+            widget.changed.connect(self._preview)
+        elif field.multiline:
+            widget = QPlainTextEdit(field.default)
             widget.setStyleSheet(mono_css)
             widget.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
             widget.setTabChangesFocus(True)  # Tab moves between fields instead of typing a tab
@@ -1078,6 +1266,7 @@ class ModulePage(QWidget):
             widget.setCurrentText(field.default)
         else:
             widget = QLineEdit(field.default)
+            widget.textChanged.connect(lambda _=None: self._preview())
             if field.help:
                 widget.setToolTip(field.help)
                 widget.setPlaceholderText(field.help)
@@ -1097,7 +1286,9 @@ class ModulePage(QWidget):
         values: dict[str, str] = {}
         for field in self.spec.fields:
             w = self.widgets[field.key]
-            if isinstance(w, QPlainTextEdit):
+            if isinstance(w, RowsEditor):
+                values[field.key] = w.text()
+            elif isinstance(w, QPlainTextEdit):
                 values[field.key] = w.toPlainText().strip()
             elif isinstance(w, QComboBox):
                 values[field.key] = w.currentText().strip()
@@ -1135,7 +1326,9 @@ class ModulePage(QWidget):
     def reset_sample(self) -> None:
         for field in self.spec.fields:
             w = self.widgets[field.key]
-            if isinstance(w, QPlainTextEdit):
+            if isinstance(w, RowsEditor):
+                w.set_text(field.default)
+            elif isinstance(w, QPlainTextEdit):
                 w.setPlainText(field.default)
             elif isinstance(w, QComboBox):
                 w.setCurrentText(field.default)
@@ -1145,16 +1338,18 @@ class ModulePage(QWidget):
         if self.gantt is not None:
             self.gantt.clear()
         self._write_output("Example inputs restored. Press Run simulation to view the results.")
+        self._preview(keep_status=True)
 
     def clear_inputs(self) -> None:
         """Empty every typable field; dropdowns keep their choice."""
         for w in self.widgets.values():
-            if isinstance(w, (QPlainTextEdit, QLineEdit)):
+            if isinstance(w, (QPlainTextEdit, QLineEdit, RowsEditor)):
                 w.clear()
         if self.gantt is not None:
             self.gantt.clear()
         self._set_status("Inputs cleared", MUTED)
         self._write_output("All inputs cleared. Enter your own data, or open Add Input and press Load example.")
+        self._preview(keep_status=True)
 
     def _draw_gantt(self, data: dict[str, str]) -> None:
         assert self.gantt is not None and self.spec.gantt is not None
@@ -1162,8 +1357,21 @@ class ModulePage(QWidget):
         colors = {pid: PROCESS_COLORS[i % len(PROCESS_COLORS)] for i, pid in enumerate(pids)}
         self.gantt.set_data(timeline, colors, makespan, label)
 
-    def _write_output(self, content: str, tag: str | None = None) -> None:
-        self.output.show_text(content, tag)
+    def _preview(self, keep_status: bool = False) -> None:
+        """Show the entered rows in the output table right away; computed columns stay blank until Run."""
+        if not self.spec.preview:
+            return
+        try:
+            self._write_output(self.spec.preview(self.read_values()), fade=False)
+        except Exception:  # best-effort: half-typed input just leaves the previous output
+            return
+        if self.gantt is not None:
+            self.gantt.clear()
+        if not keep_status:
+            self._set_status("Inputs changed · press Run simulation", MUTED)
+
+    def _write_output(self, content: str, tag: str | None = None, fade: bool = True) -> None:
+        self.output.show_text(content, tag, fade)
 
 
 class KernelApp(QMainWindow):
