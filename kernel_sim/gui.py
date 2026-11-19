@@ -354,7 +354,7 @@ MODULES: dict[str, ModuleSpec] = {
         "Disk Scheduling",
         "Compare head movement for common disk request ordering algorithms.",
         (
-            FieldSpec("algorithm", "Algorithm", "SCAN", hint="FCFS · SSTF · SCAN · C-SCAN · LOOK · C-LOOK"),
+            FieldSpec("algorithm", "Algorithm", "SCAN (Elevator)", hint="FCFS · SSTF · SCAN (Elevator) · C-SCAN · LOOK · C-LOOK"),
             FieldSpec("direction", "Initial direction", "Right", hint="Left · Right"),
             FieldSpec("head", "Starting head position", "53"),
             FieldSpec("low", "Lowest cylinder", "0"),

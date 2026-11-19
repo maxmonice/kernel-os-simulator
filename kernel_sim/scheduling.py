@@ -131,7 +131,6 @@ def priority_non_preemptive(processes: list[Process]) -> ScheduleResult:
 def priority_preemptive(processes: list[Process]) -> ScheduleResult:
     _validate(processes)
     remaining = {p.pid: p.burst for p in processes}
-    by_id = {p.pid: p for p in processes}
     order = {p.pid: i for i, p in enumerate(processes)}
     time = 0
     timeline: list[Segment] = []

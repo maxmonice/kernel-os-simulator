@@ -31,6 +31,9 @@ def schedule(
             raise ValueError(f"Request {request} is outside the configured cylinder range {low}–{high}.")
     if direction not in {"Left", "Right"}:
         raise ValueError("Choose a direction: Left or Right.")
+    label = algorithm
+    if algorithm == "SCAN (Elevator)":  # "elevator" is the textbook name for SCAN
+        algorithm = "SCAN"
     allowed = {"FCFS", "SSTF", "SCAN", "C-SCAN", "LOOK", "C-LOOK"}
     if algorithm not in allowed:
         raise ValueError(f"Choose one of: {', '.join(sorted(allowed))}.")
@@ -80,4 +83,4 @@ def schedule(
             path = [head, *first, *wrapped]
             order = first + wrapped
     movement = sum(abs(path[i] - path[i - 1]) for i in range(1, len(path)))
-    return DiskResult(algorithm, tuple(order), tuple(path), movement)
+    return DiskResult(label, tuple(order), tuple(path), movement)

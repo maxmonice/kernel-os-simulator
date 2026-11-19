@@ -183,6 +183,17 @@ class Disk(unittest.TestCase):
                             ("LOOK", 299), ("C-LOOK", 322)):
             self.assertEqual(disk.schedule(self.REQ, 53, algo, 0, 199).total_movement, total, algo)
 
+    def test_elevator_is_scan(self):
+        a = disk.schedule(self.REQ, 53, "SCAN (Elevator)")
+        b = disk.schedule(self.REQ, 53, "SCAN")
+        self.assertEqual((a.service_order, a.total_movement), (b.service_order, b.total_movement))
+        self.assertEqual(a.algorithm, "SCAN (Elevator)")
+
+    def test_lecture_slide_example(self):  # DISK-SCHEDULING slide 21: head 100, moving up
+        req = [55, 58, 39, 18, 90, 160, 150, 38, 184]
+        for algo, total in (("FCFS", 498), ("SSTF", 248), ("LOOK", 250), ("C-LOOK", 322)):
+            self.assertEqual(disk.schedule(req, 100, algo).total_movement, total, algo)
+
     def test_sstf_order(self):
         self.assertEqual(disk.schedule(self.REQ, 53, "SSTF").service_order, (65, 67, 37, 14, 98, 122, 124, 183))
 

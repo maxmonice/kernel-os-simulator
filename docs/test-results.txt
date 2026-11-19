@@ -1,0 +1,37 @@
+test_errors (test_algorithms.Banker.test_errors) ... ok
+test_large (test_algorithms.Banker.test_large) ... ok
+test_request (test_algorithms.Banker.test_request) ... ok
+test_safe (test_algorithms.Banker.test_safe) ... ok
+test_unsafe (test_algorithms.Banker.test_unsafe) ... ok
+test_elevator_is_scan (test_algorithms.Disk.test_elevator_is_scan) ... ok
+test_errors (test_algorithms.Disk.test_errors) ... ok
+test_known_movement (test_algorithms.Disk.test_known_movement) ... ok
+test_large (test_algorithms.Disk.test_large) ... ok
+test_lecture_slide_example (test_algorithms.Disk.test_lecture_slide_example) ... ok
+test_sstf_order (test_algorithms.Disk.test_sstf_order) ... ok
+test_errors (test_algorithms.Fragmentation.test_errors) ... ok
+test_external (test_algorithms.Fragmentation.test_external) ... ok
+test_fixed_internal (test_algorithms.Fragmentation.test_fixed_internal) ... ok
+test_large (test_algorithms.Fragmentation.test_large) ... ok
+test_textbook (test_algorithms.Fragmentation.test_textbook) ... ok
+test_errors (test_algorithms.Multiprogramming.test_errors) ... ok
+test_large (test_algorithms.Multiprogramming.test_large) ... ok
+test_small (test_algorithms.Multiprogramming.test_small) ... ok
+test_belady (test_algorithms.PageReplacement.test_belady) ... ok
+test_edges (test_algorithms.PageReplacement.test_edges) ... ok
+test_known_faults (test_algorithms.PageReplacement.test_known_faults) ... ok
+test_large (test_algorithms.PageReplacement.test_large) ... ok
+test_boundary_and_errors (test_algorithms.Paging.test_boundary_and_errors) ... ok
+test_translate (test_algorithms.Paging.test_translate) ... ok
+test_errors (test_algorithms.Scheduling.test_errors) ... ok
+test_idle_gap (test_algorithms.Scheduling.test_idle_gap) ... ok
+test_known_averages (test_algorithms.Scheduling.test_known_averages) ... ok
+test_large (test_algorithms.Scheduling.test_large) ... ok
+test_large (test_algorithms.Segmentation.test_large) ... ok
+test_out_of_range (test_algorithms.Segmentation.test_out_of_range) ... ok
+test_valid (test_algorithms.Segmentation.test_valid) ... ok
+
+----------------------------------------------------------------------
+Ran 32 tests in 1.069s
+
+OK
