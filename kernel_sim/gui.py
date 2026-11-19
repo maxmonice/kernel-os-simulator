@@ -3,21 +3,23 @@
 from __future__ import annotations
 
 import csv
+import html
 import io
 import re
 import sys
 import tempfile
+from collections import namedtuple
 from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 from typing import Callable
 
-from PySide6.QtCore import Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt
+from PySide6.QtCore import Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF, QEvent, QSize, Qt, QVariantAnimation
 from PySide6.QtGui import (QColor, QFont, QFontMetrics, QFontDatabase, QKeySequence, QLinearGradient, QPainter, QPen,
                            QPixmap, QShortcut, QTextCharFormat, QTextCursor)
-from PySide6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFrame, QGraphicsOpacityEffect,
+from PySide6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFrame, QGraphicsBlurEffect, QGraphicsOpacityEffect,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPlainTextEdit,
-                               QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QVBoxLayout, QWidget)
+                               QScrollArea, QHeaderView, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import banker, disk_scheduling, fragmentation, multiprogramming, page_replacement, paging, scheduling, segmentation
 from .models import Process
@@ -49,6 +51,7 @@ class ModuleSpec:
     subtitle: str
     fields: tuple[FieldSpec, ...]
     run: Callable[[dict[str, str]], str]
+    gantt: Callable[[dict[str, str]], tuple] | None = None  # -> (intervals, pids, makespan, axis label)
 
 
 def _int(value: str, label: str) -> int:
@@ -138,8 +141,7 @@ def _run_scheduling(data: dict[str, str]) -> str:
     lines = [result.algorithm, f"Time unit: {_time_label(has_units)}.",
              "Priority convention: lower number means higher priority.", "",
              _format_table(["Process", "AT", "BT", "Priority", "CT", "TAT", "WT", "RT"],
-                           [[r.pid, r.arrival, r.burst, r.priority, r.completion, r.turnaround, r.waiting, r.response] for r in result.rows]), "",
-             "GANTT CHART · see time-scaled blocks below"]
+                           [[r.pid, r.arrival, r.burst, r.priority, r.completion, r.turnaround, r.waiting, r.response] for r in result.rows])]
     lines.extend(["", f"Average waiting time:    {result.average_waiting:.2f}",
                   f"Average turnaround time: {result.average_turnaround:.2f}",
                   f"Average response time:   {result.average_response:.2f}",
@@ -148,7 +150,10 @@ def _run_scheduling(data: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-def _run_banker(data: dict[str, str]) -> str:
+Interval = namedtuple("Interval", "pid start end")
+
+
+def _banker_eval(data: dict[str, str]):
     ids = [cell.strip() for cell in data["process_ids"].split(",") if cell.strip()]
     total = [_int(cell, "Total resource count") for cell in data["total"].split(",") if cell.strip()]
     allocation = _number_rows(data["allocation"], "Allocation matrix", len(total))
@@ -168,6 +173,25 @@ def _run_banker(data: dict[str, str]) -> str:
     else:
         result = banker.check_safety(ids, allocation, maximum, total)
         trace = result.trace
+    return ids, total, result, request_pid, request_status, trace
+
+
+def _gantt_banker(data: dict[str, str]) -> tuple:
+    ids, _, result, *_ = _banker_eval(data)
+    seq = result.safe_sequence if result.safe else ()
+    return ([Interval(pid, i, i + 1) for i, pid in enumerate(seq)], ids, len(seq),
+            "Safe completion order · one slot per process, not CPU time")
+
+
+def _gantt_scheduling(data: dict[str, str]) -> tuple:
+    processes, quantum, has_units = _scheduling_inputs(data)
+    result = scheduling.run(data["algorithm"], processes, quantum)
+    return (result.timeline, [pr.pid for pr in processes], result.makespan,
+            f"CPU time ({'minutes' if has_units else 'time units'})")
+
+
+def _run_banker(data: dict[str, str]) -> str:
+    ids, total, result, request_pid, request_status, trace = _banker_eval(data)
     resources = [f"R{i + 1}" for i in range(len(total))]
     rows = [[pid, *result.need[i]] for i, pid in enumerate(ids)]
     status = "SAFE STATE" if result.safe else "UNSAFE STATE"
@@ -241,8 +265,10 @@ def _run_disk(data: dict[str, str]) -> str:
                                      _int(data["low"], "Lower cylinder"), _int(data["high"], "Upper cylinder"), data["direction"])
     legs = " → ".join(map(str, result.path))
     movements = " + ".join(str(abs(result.path[i] - result.path[i - 1])) for i in range(1, len(result.path)))
-    return (f"{result.algorithm} · direction {data['direction']}\n\nService order: "
-            + " → ".join(map(str, result.service_order))
+    steps = [[i, result.path[i], abs(result.path[i] - result.path[i - 1])] for i in range(1, len(result.path))]
+    return (f"{result.algorithm} · direction {data['direction']}\n\n"
+            + _format_table(["Step", "Head moves to", "Movement"], steps)
+            + "\n\nService order: " + " → ".join(map(str, result.service_order))
             + f"\nHead path: {legs}\n\nMovement: {movements} = {result.total_movement} cylinders")
 
 
@@ -288,7 +314,7 @@ MODULES: dict[str, ModuleSpec] = {
                       True, 8,
                       help="One per line: ID, arrival, burst, priority. Example times: 1 hr/s, 30 min/s."),
         ),
-        _run_scheduling,
+        _run_scheduling, _gantt_scheduling,
     ),
     "Banker's Algorithm": ModuleSpec(
         "Banker's Algorithm",
@@ -303,7 +329,7 @@ MODULES: dict[str, ModuleSpec] = {
             FieldSpec("request_pid", "Optional request process ID", "", help="Leave blank to run only the safety check."),
             FieldSpec("request", "Optional resource request", "", help="Comma-separated amount per resource, e.g. 1,0,2."),
         ),
-        _run_banker,
+        _run_banker, _gantt_banker,
     ),
     "Paging": ModuleSpec(
         "Paging",
@@ -379,6 +405,10 @@ MODULES: dict[str, ModuleSpec] = {
 
 
 
+NAV_GLYPHS = {"Overview": "◈", "CPU Scheduling": "◔", "Banker's Algorithm": "◧", "Paging": "▦",
+              "Page Replacement": "↻", "Segmentation": "◫", "Fragmentation": "▤", "Disk Scheduling": "◉",
+              "Multiprogramming": "◐"}
+SIDE_OPEN, SIDE_CLOSED = 232, 60
 PROCESS_COLORS = ("#0a84ff", "#30b0a0", "#bf5af2", "#ff9f0a", "#32d74b", "#ff6482", "#64d2ff")
 
 # Real backdrop blur needs Windows 11 22H2+ (DWM system backdrop). Elsewhere the UI stays opaque.
@@ -415,6 +445,12 @@ QScrollBar::handle:hover { background: rgba(255,255,255,0.30); }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: none; }
 QSplitter::handle { background: transparent; }
+QTableWidget { background: rgba(0,0,0,0.22); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;
+    gridline-color: rgba(255,255,255,0.06); outline: 0; }
+QTableWidget::item { padding: 2px 8px; }
+QHeaderView { background: transparent; }
+QHeaderView::section { background: rgba(255,255,255,0.07); color: $muted; font-weight: 600; font-size: 12px;
+    border: none; border-right: 1px solid rgba(255,255,255,0.05); padding: 6px 8px; }
 """)
 
 
@@ -445,6 +481,7 @@ class GlassButton(QAbstractButton):
     def __init__(self, text: str, kind: str = "quiet", parent: QWidget | None = None):
         super().__init__(parent)
         self.kind, self._hover, self._sel = kind, 0.0, 0.0
+        self.glyph, self.compact = "", False  # nav icon; compact = icon only
         self.setText(text)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
@@ -527,6 +564,14 @@ class GlassButton(QAbstractButton):
             p.drawRoundedRect(rect.adjusted(-1, -1, 1, 1), radius + 1, radius + 1)
         p.setFont(font)
         p.setPen(text_color)
+        if self.kind == "nav" and self.glyph:
+            icon = QFont("Segoe UI Symbol", 11)
+            p.setFont(icon)
+            p.drawText(QRectF(rect.left(), rect.top(), 36, rect.height()), Qt.AlignmentFlag.AlignCenter, self.glyph)
+            p.setFont(font)
+            if not self.compact:
+                p.drawText(rect.adjusted(40, 0, -8, 0), Qt.AlignmentFlag.AlignVCenter, self.text())
+            return
         align = Qt.AlignmentFlag.AlignVCenter | (
             Qt.AlignmentFlag.AlignLeft if self.kind == "nav" else Qt.AlignmentFlag.AlignHCenter)
         p.drawText(rect.adjusted(12, 0, -12, 0), align, self.text())
@@ -538,6 +583,7 @@ class Panel(QFrame):
     def __init__(self, hoverable: bool = False, parent: QWidget | None = None):
         super().__init__(parent)
         self._hover, self._hoverable = 0.0, hoverable
+        self.solid = False  # opaque, for popups over blurred content
         self._anim = QPropertyAnimation(self, b"hover", self)
 
     def _get_hover(self) -> float:
@@ -563,7 +609,7 @@ class Panel(QFrame):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setBrush(_color("white", 0.040 + 0.020 * self._hover))
+        p.setBrush(QColor("#1a1d23") if self.solid else _color("white", 0.040 + 0.020 * self._hover))
         p.setPen(QPen(_color("white", 0.085 + 0.06 * self._hover), 1))
         p.drawRoundedRect(rect, 10, 10)
         edge = QLinearGradient(rect.left(), 0, rect.right(), 0)
@@ -642,9 +688,9 @@ class GanttView(QWidget):
         small = QFont(self.font())
         small.setPixelSize(11)
         p.setFont(small)
-        p.drawText(QPointF(self.LEFT, 14), f"CPU time ({axis_unit})")
+        p.drawText(QPointF(self.LEFT, 14), axis_unit)
         if not timeline:
-            p.drawText(QPointF(self.LEFT, 48), "No scheduled intervals")
+            p.drawText(QPointF(self.LEFT, 48), "Nothing to chart · no safe or scheduled sequence")
             return
         total = self.LEFT + max(1, makespan) * self.UNIT
         p.setClipRect(QRectF(0, 0, self.LEFT + (total - self.LEFT) * self._reveal + 1, self.height()))
@@ -671,6 +717,202 @@ class GanttView(QWidget):
             p.drawLine(QPointF(x, self.BOTTOM - 17), QPointF(x, self.BOTTOM - 12))
             p.setPen(_color(FG, 0.85))
             p.drawText(QRectF(x - 20, self.BOTTOM - 11, 40, 14), Qt.AlignmentFlag.AlignCenter, str(tick))
+
+
+_KIND_COLOR = {"error": RED, "bad": RED, "good": GREEN, "heading": BLUE}
+
+
+def _line_kind(text: str, tag: str | None) -> str | None:
+    if tag or not text:
+        return tag
+    if "UNSAFE STATE" in text:
+        return "bad"
+    if "SAFE STATE" in text:
+        return "good"
+    if text.isupper() and not any(ch.isdigit() or ch == "|" for ch in text):
+        return "heading"
+    return None
+
+
+def _is_divider(line: str) -> bool:
+    return "+" in line and set(line.strip()) <= set("-+")
+
+
+class ResultsView(QScrollArea):
+    """Renders run output as headings/text plus real tables (any `_format_table` block becomes a QTableWidget)."""
+
+    ROW, HEAD = 30, 32
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+    def show_text(self, content: str, tag: str | None = None) -> None:
+        host = QWidget()
+        col = QVBoxLayout(host)
+        col.setContentsMargins(0, 0, 8, 0)
+        col.setSpacing(8)
+        lines, buf, i = content.split("\n"), [], 0
+
+        def flush() -> None:
+            while buf and not buf[-1].strip():
+                buf.pop()
+            while buf and not buf[0].strip():
+                buf.pop(0)
+            if buf:
+                col.addWidget(self._text(buf, tag))
+            buf.clear()
+
+        while i < len(lines):
+            if i + 1 < len(lines) and " | " in lines[i] and _is_divider(lines[i + 1]):
+                flush()
+                j, rows = i + 2, []
+                while j < len(lines) and lines[j].strip():
+                    rows.append([c.strip() for c in lines[j].split(" | ")])
+                    j += 1
+                col.addWidget(self._table([c.strip() for c in lines[i].split(" | ")], rows))
+                i = j
+                continue
+            buf.append(lines[i])
+            i += 1
+        flush()
+        col.addStretch(1)
+        self.setWidget(host)
+        _fade_in(host, 220, 0.3)
+
+    @staticmethod
+    def _text(lines: list[str], tag: str | None) -> QLabel:
+        parts = []
+        for line in lines:
+            kind = _line_kind(line.strip(), tag)
+            body = html.escape(line) or "&nbsp;"
+            if kind:
+                weight = "" if kind == "error" else "font-weight:bold;"
+                body = f'<span style="color:{_KIND_COLOR[kind]};{weight}">{body}</span>'
+            parts.append(body)
+        label = QLabel("<br>".join(parts))
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setStyleSheet(f'font-family: "{MONO_FONT}"; font-size: 13px;')
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        return label
+
+    def _table(self, headers: list[str], rows: list[list[str]]) -> QTableWidget:
+        table = QTableWidget(len(rows), len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(self.ROW)
+        table.horizontalHeader().setFixedHeight(self.HEAD)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        for r, row in enumerate(rows):
+            for c, value in enumerate(row[:len(headers)]):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                table.setItem(r, c, item)
+        table.setFixedHeight(self.HEAD + self.ROW * len(rows) + 4)
+        return table
+
+
+class InputOverlay(QWidget):
+    """Modal sheet over the window. One 0..1 `progress` drives scrim, panel fade + rise and background blur,
+    so it can be reversed mid-flight. Closes on Esc, Done or a click outside the panel."""
+
+    BLUR, DIM, RISE = 7.0, 120, 14
+
+    def __init__(self, parent: QWidget, panel: QWidget, targets: list[QWidget]) -> None:
+        super().__init__(parent)
+        self.panel, self.targets = panel, targets
+        self._t, self._fx, self._blurs = 0.0, None, []
+        self._anim = QPropertyAnimation(self, b"progress", self)
+        self._anim.finished.connect(self._settled)
+        panel.setParent(self)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        parent.installEventFilter(self)
+        self.hide()
+
+    def _get_progress(self) -> float:
+        return self._t
+
+    def _set_progress(self, v: float) -> None:
+        self._t = v
+        if self._fx:
+            self._fx.setOpacity(v)
+        for blur in self._blurs:
+            blur.setBlurRadius(self.BLUR * v)
+        self._place()
+        self.update()
+
+    progress = Property(float, _get_progress, _set_progress)
+
+    def _go(self, target: float, ms: int) -> None:
+        self._anim.stop()
+        self._anim.setDuration(ms)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutQuart)
+        self._anim.setStartValue(self._t)
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def open(self) -> None:
+        self.setGeometry(self.parentWidget().rect())
+        if not self._blurs:
+            self._blurs = [QGraphicsBlurEffect(w) for w in self.targets]
+            for w, blur in zip(self.targets, self._blurs):
+                blur.setBlurRadius(0)
+                w.setGraphicsEffect(blur)
+        self._fx = QGraphicsOpacityEffect(self.panel)
+        self._fx.setOpacity(self._t)
+        self.panel.setGraphicsEffect(self._fx)
+        self.raise_()
+        self.show()
+        self.panel.show()
+        self.setFocus()
+        self._go(1.0, 260)
+
+    def close_sheet(self) -> None:
+        self._go(0.0, 170)  # exits faster than it enters
+
+    def _settled(self) -> None:
+        if self._fx:  # crisp text once fully open or closed
+            self._fx = None
+            self.panel.setGraphicsEffect(None)
+        if self._t == 0.0:
+            for w in self.targets:
+                w.setGraphicsEffect(None)
+            self._blurs = []
+            self.hide()
+
+    def _place(self) -> None:
+        w = min(self.width() - 80, 980)
+        h = min(self.panel.sizeHint().height(), self.height() - 80)
+        self.panel.setGeometry(round((self.width() - w) / 2), round((self.height() - h) / 2 + (1 - self._t) * self.RISE), w, h)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Resize and obj is self.parentWidget():
+            self.setGeometry(self.parentWidget().rect())
+        return False
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._place()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        QPainter(self).fillRect(self.rect(), QColor(0, 0, 0, round(self.DIM * self._t)))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if not self.panel.geometry().contains(event.position().toPoint()):
+            self.close_sheet()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape:
+            self.close_sheet()
+        else:
+            super().keyPressEvent(event)
 
 
 class OverviewPage(QScrollArea):
@@ -739,105 +981,116 @@ class ModulePage(QWidget):
         col.addWidget(_label(self.spec.title, "title"))
         col.addSpacing(4)
         col.addWidget(_label(self.spec.subtitle, "subtitle", True))
-        col.addSpacing(18)
-        split = QSplitter(Qt.Orientation.Horizontal)
-        split.setHandleWidth(12)
-        split.setChildrenCollapsible(False)
-        col.addWidget(split, 1)
+        col.addSpacing(16)
 
-        # ---- inputs
-        inputs = Panel()
-        left = QVBoxLayout(inputs)
-        left.setContentsMargins(20, 18, 8, 18)
-        left.setSpacing(0)
-        left.addWidget(_label("Inputs", "section"))
-        left.addSpacing(10)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        form_host = QWidget()
-        form = QVBoxLayout(form_host)
-        form.setContentsMargins(0, 0, 12, 0)
-        form.setSpacing(14)
-        mono_css = f'font-family: "{MONO_FONT}"; font-size: 13px;'  # global QSS would override setFont
-        for field in self.spec.fields:
-            group = QVBoxLayout()
-            group.setSpacing(4)
-            group.addWidget(_label(field.label, "field"))
-            if field.multiline and field.help:
-                group.addWidget(_label(field.help, "hint", True))
-            if field.multiline:
-                widget: QWidget = QPlainTextEdit(field.default)
-                widget.setStyleSheet(mono_css)
-                widget.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-                widget.setTabChangesFocus(True)  # Tab moves between fields instead of typing a tab
-                widget.setFixedHeight(round(QFontMetrics(QFont(MONO_FONT, 10)).lineSpacing() * field.height) + 24)
-            elif field.hint:
-                widget = QComboBox()
-                widget.addItems([item.strip() for item in field.hint.split("·")])
-                widget.setCurrentText(field.default)
-            else:
-                widget = QLineEdit(field.default)
-            group.addWidget(widget)
-            self.widgets[field.key] = widget
-            form.addLayout(group)
-        form.addStretch(1)
-        scroll.setWidget(form_host)
-        left.addWidget(scroll, 1)
-        rule = QFrame()
-        rule.setFixedHeight(1)
-        rule.setStyleSheet("background: rgba(255,255,255,0.08);")
-        left.addSpacing(10)
-        left.addWidget(rule)
-        left.addSpacing(12)
+        # ---- action row
         actions = QHBoxLayout()
-        actions.setContentsMargins(0, 0, 12, 0)
+        actions.setSpacing(8)
+        self.toggle = GlassButton("+ Add Input")
+        self.toggle.clicked.connect(self.toggle_inputs)
         run = GlassButton("Run simulation", "accent")
         run.clicked.connect(self.run_simulation)
-        example = GlassButton("Load example")
-        example.clicked.connect(self.reset_sample)
         reset = GlassButton("Reset")
         reset.clicked.connect(self.clear_inputs)
-        actions.addWidget(run)
-        actions.addWidget(example)
-        actions.addWidget(reset)
-        actions.addStretch(1)
-        left.addLayout(actions)
-        left.addSpacing(10)
-        self.status = _label("Ready · input is checked when you run", "hint", True)
-        left.addWidget(self.status)
+        for b in (self.toggle, run, reset):
+            actions.addWidget(b)
+        actions.addSpacing(8)
+        self.status = _label("Ready · input is checked when you run", "hint")
+        actions.addWidget(self.status, 1)
+        col.addLayout(actions)
 
-        # ---- output
+        # ---- input sheet: a popup panel, shown by InputOverlay
+        self.input_panel = Panel()
+        self.input_panel.solid = True
+        self._overlay: InputOverlay | None = None
+        outer = QVBoxLayout(self.input_panel)
+        outer.setContentsMargins(24, 20, 24, 22)
+        outer.setSpacing(14)
+        head = QHBoxLayout()
+        head.addWidget(_label("Inputs", "title"))
+        head.addStretch(1)
+        sample = GlassButton("Load example")
+        sample.clicked.connect(self.reset_sample)
+        head.addWidget(sample)
+        done =GlassButton("Done", "accent")
+        done.clicked.connect(lambda: self._overlay and self._overlay.close_sheet())
+        head.addWidget(done)
+        outer.addLayout(head)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(12)
+        outer.addLayout(grid)
+        mono_css = f'font-family: "{MONO_FONT}"; font-size: 13px;'  # global QSS would override setFont
+        short = [f for f in self.spec.fields if not f.multiline]
+        long = [f for f in self.spec.fields if f.multiline]
+        for i, field in enumerate(short):  # short fields: three per row on a 6-column grid
+            grid.addLayout(self._field(field, mono_css), i // 3, (i % 3) * 2, 1, 2)
+        base = (len(short) + 2) // 3
+        span = 3 if len(long) > 1 else 6
+        for i, field in enumerate(long):  # tables: two side by side
+            grid.addLayout(self._field(field, mono_css), base + i // 2, (i % 2) * 3, 1, span)
+        self.input_panel.hide()
+
+        # ---- full-width results table(s), then the Gantt chart in its own row
+        col.addSpacing(14)
         outputs = Panel()
         right = QVBoxLayout(outputs)
         right.setContentsMargins(20, 18, 20, 18)
         right.setSpacing(0)
         right.addWidget(_label("Output", "section"))
         right.addSpacing(10)
-        if self.spec.title == "CPU Scheduling":
-            right.addWidget(_label("Gantt chart", "hint"))
-            right.addSpacing(4)
+        self.output = ResultsView()
+        right.addWidget(self.output, 1)
+        self._write_output("Press + Add Input to edit the data, then Run simulation.\n\n"
+                           "Add as many input rows as you need.")
+        col.addWidget(outputs, 1)
+        if self.spec.gantt:
+            chart = Panel()
+            box = QVBoxLayout(chart)
+            box.setContentsMargins(20, 14, 20, 14)
+            box.setSpacing(6)
+            box.addWidget(_label("Gantt chart", "section"))
             self.gantt = GanttView()
             strip = QScrollArea()
             strip.setWidget(self.gantt)
             strip.setWidgetResizable(True)
             strip.setFixedHeight(self.gantt.height() + 14)
             strip.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            right.addWidget(strip)
-            right.addSpacing(12)
-        self.output = QPlainTextEdit()
-        self.output.setReadOnly(True)
-        self.output.setStyleSheet(mono_css)
-        self.output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        right.addWidget(self.output, 1)
-        self._write_output("Choose or edit the inputs, then run the simulation.\n\n"
-                           "Add as many input rows as you need.")
+            box.addWidget(strip)
+            col.addSpacing(12)
+            col.addWidget(chart)
 
-        split.addWidget(inputs)
-        split.addWidget(outputs)
-        split.setStretchFactor(0, 0)
-        split.setStretchFactor(1, 1)
-        split.setSizes([470, 760])
+    def _field(self, field: FieldSpec, mono_css: str) -> QVBoxLayout:
+        group = QVBoxLayout()
+        group.setSpacing(4)
+        group.addWidget(_label(field.label, "field"))
+        if field.multiline and field.help:
+            group.addWidget(_label(field.help, "hint", True))
+        if field.multiline:
+            widget: QWidget = QPlainTextEdit(field.default)
+            widget.setStyleSheet(mono_css)
+            widget.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+            widget.setTabChangesFocus(True)  # Tab moves between fields instead of typing a tab
+            widget.setFixedHeight(round(QFontMetrics(QFont(MONO_FONT, 10)).lineSpacing() * field.height) + 24)
+        elif field.hint:
+            widget = QComboBox()
+            widget.addItems([item.strip() for item in field.hint.split("·")])
+            widget.setCurrentText(field.default)
+        else:
+            widget = QLineEdit(field.default)
+            if field.help:
+                widget.setToolTip(field.help)
+                widget.setPlaceholderText(field.help)
+        group.addWidget(widget)
+        group.addStretch(1)
+        self.widgets[field.key] = widget
+        return group
+
+    def toggle_inputs(self) -> None:
+        if self._overlay is None:
+            win = self.window()
+            self._overlay = InputOverlay(win.centralWidget(), self.input_panel, win.blur_targets)
+        self._overlay.open()
 
     # ----- actions ----------------------------------------------------------
     def read_values(self) -> dict[str, str]:
@@ -901,38 +1154,16 @@ class ModulePage(QWidget):
         if self.gantt is not None:
             self.gantt.clear()
         self._set_status("Inputs cleared", MUTED)
-        self._write_output("All inputs cleared. Enter your own data, or press Load example.")
+        self._write_output("All inputs cleared. Enter your own data, or open Add Input and press Load example.")
 
     def _draw_gantt(self, data: dict[str, str]) -> None:
-        assert self.gantt is not None
-        processes, quantum, has_units = _scheduling_inputs(data)
-        result = scheduling.run(data["algorithm"], processes, quantum)
-        colors = {pr.pid: PROCESS_COLORS[i % len(PROCESS_COLORS)] for i, pr in enumerate(processes)}
-        self.gantt.set_data(result.timeline, colors, result.makespan, "minutes" if has_units else "time units")
+        assert self.gantt is not None and self.spec.gantt is not None
+        timeline, pids, makespan, label = self.spec.gantt(data)
+        colors = {pid: PROCESS_COLORS[i % len(PROCESS_COLORS)] for i, pid in enumerate(pids)}
+        self.gantt.set_data(timeline, colors, makespan, label)
 
     def _write_output(self, content: str, tag: str | None = None) -> None:
-        self.output.clear()
-        cursor = self.output.textCursor()
-        for number, line in enumerate(content.split("\n")):
-            fmt = QTextCharFormat()
-            text = line.strip()
-            kind = tag
-            if kind is None and text:
-                if "UNSAFE STATE" in text:
-                    kind = "bad"
-                elif "SAFE STATE" in text:
-                    kind = "good"
-                elif text.isupper() and not any(ch.isdigit() or ch == "|" for ch in text):
-                    kind = "heading"
-            if kind:
-                fmt.setForeground(QColor({"error": RED, "bad": RED, "good": GREEN, "heading": BLUE}[kind]))
-                if kind != "error":
-                    fmt.setFontWeight(QFont.Weight.Bold)
-            if number:
-                cursor.insertBlock()
-            cursor.insertText(line, fmt)
-        self.output.moveCursor(QTextCursor.MoveOperation.Start)
-        _fade_in(self.output, 220, 0.3)
+        self.output.show_text(content, tag)
 
 
 class KernelApp(QMainWindow):
@@ -963,26 +1194,36 @@ class KernelApp(QMainWindow):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
 
-        sidebar = QFrame()
+        self.sidebar = sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(232)
+        sidebar.setFixedWidth(SIDE_OPEN)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(12, 18, 12, 18)
+        side.setContentsMargins(10, 14, 10, 18)
         side.setSpacing(2)
-        side.addWidget(_label("Project", "side"))
-        side.addSpacing(4)
+        top = QHBoxLayout()
+        self.collapse_btn = GlassButton("☰")
+        self.collapse_btn.setFixedSize(40, 34)
+        self.collapse_btn.setToolTip("Collapse / expand sidebar")
+        self.collapse_btn.clicked.connect(self.toggle_sidebar)
+        top.addWidget(self.collapse_btn)
+        self.side_texts = [_label("Project", "side")]
+        top.addWidget(self.side_texts[0])
+        top.addStretch(1)
+        side.addLayout(top)
+        side.addSpacing(8)
         for title in self.order:
             button = GlassButton(title, "nav")
-            button.setFixedHeight(34)
+            button.glyph = NAV_GLYPHS[title]
+            button.setFixedHeight(36)
             button.clicked.connect(lambda _=False, name=title: self.show_module(name))
             side.addWidget(button)
             self.nav_buttons[title] = button
             if title == "Overview":
-                side.addSpacing(16)
-                side.addWidget(_label("Modules", "side"))
-                side.addSpacing(4)
+                side.addSpacing(10)
         side.addStretch(1)
-        side.addWidget(_label("Add rows as needed. Inputs are checked before each run.", "side", True))
+        note = _label("Add rows as needed. Inputs are checked before each run.", "side", True)
+        self.side_texts.append(note)
+        side.addWidget(note)
         row.addWidget(sidebar)
 
         content = QFrame()
@@ -1010,12 +1251,30 @@ class KernelApp(QMainWindow):
         self.stack = QStackedWidget()
         col.addWidget(self.stack, 1)
         row.addWidget(content, 1)
+        self.blur_targets = [sidebar, content]
 
         self.pages["Overview"] = OverviewPage(self.show_module)
         for title, spec in MODULES.items():
             self.pages[title] = ModulePage(spec)
         for page in self.pages.values():
             self.stack.addWidget(page)
+
+    def toggle_sidebar(self) -> None:
+        opening = self.sidebar.width() < SIDE_OPEN
+        for label in self.side_texts:
+            label.setVisible(opening)
+        for name, button in self.nav_buttons.items():
+            button.compact = not opening
+            button.setToolTip("" if opening else name)
+            button.update()
+        anim = QVariantAnimation(self)
+        anim.setDuration(220)
+        anim.setEasingCurve(QEasingCurve.Type.OutQuart)
+        anim.setStartValue(self.sidebar.width())
+        anim.setEndValue(SIDE_OPEN if opening else SIDE_CLOSED)
+        anim.valueChanged.connect(lambda w: self.sidebar.setFixedWidth(int(w)))
+        anim.start(QVariantAnimation.DeletionPolicy.DeleteWhenStopped)
+        self._side_anim = anim
 
     def _run_current_simulation(self) -> None:
         page = self.pages.get(self.current)
