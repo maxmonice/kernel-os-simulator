@@ -1,30 +1,35 @@
-"""Tkinter interface for the KERNEL OS Simulator."""
+"""Qt (PySide6) interface for the KERNEL OS Simulator."""
 
 from __future__ import annotations
 
 import csv
 import io
 import re
-import tkinter as tk
+import sys
+import tempfile
 from dataclasses import dataclass
-from tkinter import ttk
+from pathlib import Path
+from string import Template
 from typing import Callable
+
+from PySide6.QtCore import Property, QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QFontDatabase, QKeySequence, QLinearGradient, QPainter, QPen,
+                           QPixmap, QShortcut, QTextCharFormat, QTextCursor)
+from PySide6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFrame, QGraphicsOpacityEffect,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPlainTextEdit,
+                               QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import banker, disk_scheduling, fragmentation, multiprogramming, page_replacement, paging, scheduling, segmentation
 from .models import Process
 
-
-BG = "#0e1013"
-SIDEBAR = "#14171b"
-SURFACE = "#171b20"
-RAISED = "#222730"
-BORDER = "#2a3039"
-FG = "#e6e8eb"
-MUTED = "#98a0ab"
-ACCENT = "#f5a524"
-GREEN = "#5bd69c"
-RED = "#ff6b6b"
-BLUE = "#6fa8ff"
+FG = "#f2f3f5"
+MUTED = "#8b919b"
+ACCENT = "#0a84ff"
+GREEN = "#32d74b"
+RED = "#ff6961"
+BLUE = "#64a8ff"
+BG = "#0b0c0f"
+SIDEBAR = "#111317"
 
 
 @dataclass(frozen=True)
@@ -373,238 +378,480 @@ MODULES: dict[str, ModuleSpec] = {
 }
 
 
-PROCESS_COLORS = ("#d99a2b", "#398c82", "#536fc4", "#a45d8a", "#57885d", "#bd684f", "#547f9c")
+
+PROCESS_COLORS = ("#0a84ff", "#30b0a0", "#bf5af2", "#ff9f0a", "#32d74b", "#ff6482", "#64d2ff")
+
+# Real backdrop blur needs Windows 11 22H2+ (DWM system backdrop). Elsewhere the UI stays opaque.
+GLASS = sys.platform == "win32" and sys.getwindowsversion().build >= 22621
+UI_FONT = "Segoe UI"
+MONO_FONT = "Consolas"
+
+_QSS = Template("""
+* { font-family: "$ui"; font-size: 13px; color: $fg; }
+#root { background: transparent; }
+#sidebar { background: $sidebar_bg; border-right: 1px solid rgba(255,255,255,0.07); }
+#content { background: $content_bg; }
+QLabel { background: transparent; }
+QLabel#title { font-size: 28px; font-weight: 600; }
+QLabel#brand { font-size: 14px; font-weight: 600; }
+QLabel#subtitle { color: $muted; }
+QLabel#section { font-size: 14px; font-weight: 600; }
+QLabel#cardtitle { font-size: 14px; font-weight: 600; }
+QLabel#field { font-size: 12px; font-weight: 600; }
+QLabel#hint, QLabel#side { color: $muted; font-size: 11px; }
+QLineEdit, QPlainTextEdit, QComboBox {
+    background: rgba(0,0,0,0.30); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 7px; padding: 6px 9px; selection-background-color: $sel; }
+QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QComboBox:on { border: 1px solid $accent; }
+QComboBox::drop-down { border: none; width: 24px; }
+QComboBox::down-arrow { image: url($chevron); width: 10px; height: 10px; }
+QComboBox QAbstractItemView { background: #1d2026; border: 1px solid rgba(255,255,255,0.10);
+    selection-background-color: $accent; selection-color: white; outline: 0; padding: 4px; }
+QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
+QScrollBar::handle { background: rgba(255,255,255,0.16); border-radius: 3px; min-height: 30px; min-width: 30px; }
+QScrollBar::handle:hover { background: rgba(255,255,255,0.30); }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+QSplitter::handle { background: transparent; }
+""")
 
 
-class OverviewPage(ttk.Frame):
+def _color(value: str | QColor, alpha: float = 1.0) -> QColor:
+    c = QColor(value)
+    c.setAlphaF(alpha)
+    return c
+
+
+def _mix(a: str | QColor, b: str | QColor, t: float) -> QColor:
+    ca, cb = QColor(a), QColor(b)
+    return QColor(*(round(x + (y - x) * t) for x, y in
+                    ((ca.red(), cb.red()), (ca.green(), cb.green()), (ca.blue(), cb.blue()))))
+
+
+def _animate(anim: QPropertyAnimation, target: float, ms: int = 150) -> None:
+    """Retarget from the current value, so rapid hover in/out never snaps (interruptible)."""
+    anim.stop()
+    anim.setDuration(ms)
+    anim.setEasingCurve(QEasingCurve.Type.OutQuart)
+    anim.setEndValue(target)
+    anim.start()
+
+
+class GlassButton(QAbstractButton):
+    """accent | quiet | nav. Colour eases on hover, presses to 0.97 scale, shows a ring on Tab focus."""
+
+    def __init__(self, text: str, kind: str = "quiet", parent: QWidget | None = None):
+        super().__init__(parent)
+        self.kind, self._hover, self._sel = kind, 0.0, 0.0
+        self.setText(text)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self._hover_anim = QPropertyAnimation(self, b"hover", self)
+        self._sel_anim = QPropertyAnimation(self, b"sel", self)
+        if kind == "nav":
+            self.setCheckable(True)
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            self.toggled.connect(lambda on: _animate(self._sel_anim, 1.0 if on else 0.0, 200))
+
+    def _get_hover(self) -> float:
+        return self._hover
+
+    def _set_hover(self, v: float) -> None:
+        self._hover = v
+        self.update()
+
+    def _get_sel(self) -> float:
+        return self._sel
+
+    def _set_sel(self, v: float) -> None:
+        self._sel = v
+        self.update()
+
+    hover = Property(float, _get_hover, _set_hover)
+    sel = Property(float, _get_sel, _set_sel)
+
+    def sizeHint(self) -> QSize:
+        fm = self.fontMetrics()
+        width = fm.horizontalAdvance(self.text()) + (24 if self.kind == "nav" else 32)
+        return QSize(width, 34 if self.kind == "nav" else 34)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        _animate(self._hover_anim, 1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        _animate(self._hover_anim, 0.0, 220)
+        super().leaveEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.click()
+        else:
+            super().keyPressEvent(event)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        if self.isDown() and self.kind != "nav":
+            c = rect.center()
+            p.translate(c)
+            p.scale(0.97, 0.97)
+            p.translate(-c)
+        h, s = self._hover, self._sel
+        radius = 8.0
+        font = QFont(self.font())
+        text_color: QColor
+        if self.kind == "accent":
+            fill = _mix(ACCENT, "#4aa3ff", h)
+            text_color = QColor("white")
+            font.setWeight(QFont.Weight.DemiBold)
+            p.setBrush(fill)
+            p.setPen(Qt.PenStyle.NoPen)
+        elif self.kind == "quiet":
+            p.setBrush(_color("white", 0.07 + 0.05 * h))
+            p.setPen(QPen(_color("white", 0.09), 1))
+            text_color = QColor(FG)
+        else:
+            p.setBrush(_color("white", 0.10 * s + 0.05 * h * (1 - s)))
+            p.setPen(Qt.PenStyle.NoPen)
+            text_color = _mix(MUTED, FG, max(s, 0.6 * h))
+            if s > 0.5:
+                font.setWeight(QFont.Weight.DemiBold)
+        p.drawRoundedRect(rect, radius, radius)
+        if self.hasFocus():
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(_color(ACCENT, 0.9), 2))
+            p.drawRoundedRect(rect.adjusted(-1, -1, 1, 1), radius + 1, radius + 1)
+        p.setFont(font)
+        p.setPen(text_color)
+        align = Qt.AlignmentFlag.AlignVCenter | (
+            Qt.AlignmentFlag.AlignLeft if self.kind == "nav" else Qt.AlignmentFlag.AlignHCenter)
+        p.drawText(rect.adjusted(12, 0, -12, 0), align, self.text())
+
+
+class Panel(QFrame):
+    """Glass surface: faint white fill, hairline border, and a top edge that catches light."""
+
+    def __init__(self, hoverable: bool = False, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._hover, self._hoverable = 0.0, hoverable
+        self._anim = QPropertyAnimation(self, b"hover", self)
+
+    def _get_hover(self) -> float:
+        return self._hover
+
+    def _set_hover(self, v: float) -> None:
+        self._hover = v
+        self.update()
+
+    hover = Property(float, _get_hover, _set_hover)
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        if self._hoverable:
+            _animate(self._anim, 1.0, 180)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._hoverable:
+            _animate(self._anim, 0.0, 240)
+        super().leaveEvent(event)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setBrush(_color("white", 0.040 + 0.020 * self._hover))
+        p.setPen(QPen(_color("white", 0.085 + 0.06 * self._hover), 1))
+        p.drawRoundedRect(rect, 10, 10)
+        edge = QLinearGradient(rect.left(), 0, rect.right(), 0)
+        edge.setColorAt(0.0, _color("white", 0.0))
+        edge.setColorAt(0.5, _color("white", 0.16))
+        edge.setColorAt(1.0, _color("white", 0.0))
+        p.setPen(QPen(edge, 1))
+        p.drawLine(QPointF(rect.left() + 10, rect.top()), QPointF(rect.right() - 10, rect.top()))
+
+
+def _label(text: str, name: str, wrap: bool = False) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName(name)
+    label.setWordWrap(wrap)
+    return label
+
+
+def _fade_in(widget: QWidget, ms: int = 200, start: float = 0.0) -> None:
+    """Brief opacity ramp; the effect is removed afterwards so text stays crisp and scrolling stays cheap."""
+    effect = QGraphicsOpacityEffect(widget)
+    effect.setOpacity(start)
+    widget.setGraphicsEffect(effect)
+    anim = QPropertyAnimation(effect, b"opacity", widget)
+    anim.setDuration(ms)
+    anim.setStartValue(start)
+    anim.setEndValue(1.0)
+    anim.setEasingCurve(QEasingCurve.Type.OutQuart)
+    anim.finished.connect(lambda: widget.setGraphicsEffect(None))
+    anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+
+
+class GanttView(QWidget):
+    """Time-scaled CPU timeline. Blocks wipe in left to right when a run finishes."""
+
+    LEFT, RIGHT, TOP, BOTTOM, UNIT = 6, 20, 26, 66, 48
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._data: tuple | None = None
+        self._reveal = 1.0
+        self._anim = QPropertyAnimation(self, b"reveal", self)
+        self.setFixedHeight(96)
+
+    def _get_reveal(self) -> float:
+        return self._reveal
+
+    def _set_reveal(self, v: float) -> None:
+        self._reveal = v
+        self.update()
+
+    reveal = Property(float, _get_reveal, _set_reveal)
+
+    def clear(self) -> None:
+        self._data = None
+        self.setMinimumWidth(0)
+        self.update()
+
+    def set_data(self, timeline, colors: dict[str, str], makespan: int, axis_unit: str) -> None:
+        self._data = (timeline, colors, makespan, axis_unit)
+        self.setMinimumWidth(self.LEFT + max(1, makespan) * self.UNIT + self.RIGHT)
+        self._reveal = 0.0
+        self._anim.stop()
+        self._anim.setDuration(520)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutQuart)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.start()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        if self._data is None:
+            return
+        timeline, colors, makespan, axis_unit = self._data
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(_color(MUTED))
+        small = QFont(self.font())
+        small.setPixelSize(11)
+        p.setFont(small)
+        p.drawText(QPointF(self.LEFT, 14), f"CPU time ({axis_unit})")
+        if not timeline:
+            p.drawText(QPointF(self.LEFT, 48), "No scheduled intervals")
+            return
+        total = self.LEFT + max(1, makespan) * self.UNIT
+        p.setClipRect(QRectF(0, 0, self.LEFT + (total - self.LEFT) * self._reveal + 1, self.height()))
+        bold = QFont(small)
+        bold.setWeight(QFont.Weight.DemiBold)
+        bold.setPixelSize(12)
+        for iv in timeline:
+            x1, x2 = self.LEFT + iv.start * self.UNIT, self.LEFT + iv.end * self.UNIT
+            box = QRectF(x1 + 1, self.TOP, x2 - x1 - 2, self.BOTTOM - self.TOP - 20)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(_color(colors[iv.pid], 0.92) if iv.pid else _color("white", 0.07))
+            p.drawRoundedRect(box, 6, 6)
+            if x2 - x1 >= 32:
+                p.setFont(bold)
+                p.setPen(QColor("white") if iv.pid else _color(MUTED))
+                p.drawText(box, Qt.AlignmentFlag.AlignCenter, iv.pid or "IDLE")
+        marks = {0, makespan, *(i.start for i in timeline), *(i.end for i in timeline)}
+        mono = QFont(MONO_FONT)
+        mono.setPixelSize(10)
+        p.setFont(mono)
+        for tick in sorted(marks):
+            x = self.LEFT + tick * self.UNIT
+            p.setPen(_color("white", 0.25))
+            p.drawLine(QPointF(x, self.BOTTOM - 17), QPointF(x, self.BOTTOM - 12))
+            p.setPen(_color(FG, 0.85))
+            p.drawText(QRectF(x - 20, self.BOTTOM - 11, 40, 14), Qt.AlignmentFlag.AlignCenter, str(tick))
+
+
+class OverviewPage(QScrollArea):
     """Project landing page with the team and a quick module index."""
 
-    def __init__(self, parent: tk.Misc, open_module: Callable[[str], None]):
-        super().__init__(parent, style="App.TFrame")
-        self._build(open_module)
-
-    def _build(self, open_module: Callable[[str], None]) -> None:
-        viewport = tk.Frame(self, bg=BG)
-        viewport.pack(fill="both", expand=True)
-        canvas = tk.Canvas(viewport, bg=BG, highlightthickness=0, borderwidth=0)
-        scrollbar = ttk.Scrollbar(viewport, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        content = tk.Frame(canvas, bg=BG, padx=30, pady=24)
-        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
-
-        def update_scroll_region(_event: tk.Event) -> None:
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def fit_content_width(event: tk.Event) -> None:
-            canvas.itemconfigure(content_window, width=event.width)
-
-        content.bind("<Configure>", update_scroll_region)
-        canvas.bind("<Configure>", fit_content_width)
-        self._overview_canvas = canvas
-
-        # Keep the overview focused on the requested team and module sections.
-        ttk.Label(content, text="PROJECT TEAM", style="PageTitle.TLabel").pack(anchor="w", pady=(0, 8))
-        team = tk.Frame(content, bg=BG)
-        team.pack(fill="x")
-        members = (("Amiel Amido", "Group leader"),
-                   ("Kevin James Riparip", "Project team"),
+    def __init__(self, open_module: Callable[[str], None]):
+        super().__init__()
+        self.setWidgetResizable(True)
+        host = QWidget()
+        self.setWidget(host)
+        col = QVBoxLayout(host)
+        col.setContentsMargins(32, 28, 32, 28)
+        col.setSpacing(0)
+        col.addWidget(_label("Project team", "title"))
+        col.addSpacing(14)
+        team = QGridLayout()
+        team.setSpacing(12)
+        members = (("Amiel Amido", "Group leader"), ("Kevin James Riparip", "Project team"),
                    ("Rafael Carlos III", "Project team"))
-        for col, (name, role) in enumerate(members):
-            team.grid_columnconfigure(col, weight=1, uniform="team")
-            card = tk.Frame(team, bg=SURFACE, padx=16, pady=12)
-            card.grid(row=0, column=col, sticky="ew", padx=(0, 6) if col == 0 else (6, 0))
-            tk.Label(card, text=name, bg=SURFACE, fg=FG, font=("Segoe UI", 11, "bold")).pack(anchor="w")
-            tk.Label(card, text=role, bg=SURFACE, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w", pady=(3, 0))
-
-        ttk.Label(content, text="PROJECT MODULES", style="PageTitle.TLabel").pack(anchor="w", pady=(18, 10))
-        cards = tk.Frame(content, bg=BG)
-        cards.pack(fill="x")
+        for i, (name, role) in enumerate(members):
+            card = Panel()
+            lay = QVBoxLayout(card)
+            lay.setContentsMargins(18, 14, 18, 14)
+            lay.setSpacing(3)
+            lay.addWidget(_label(name, "cardtitle"))
+            lay.addWidget(_label(role, "subtitle"))
+            team.addWidget(card, 0, i)
+        col.addLayout(team)
+        col.addSpacing(26)
+        col.addWidget(_label("Modules", "title"))
+        col.addSpacing(14)
+        grid = QGridLayout()
+        grid.setSpacing(12)
         for index, title in enumerate(MODULES):
-            row, col = divmod(index, 2)
-            cards.grid_columnconfigure(col, weight=1, uniform="module")
-            card = tk.Frame(cards, bg=SURFACE, padx=16, pady=12)
-            card.grid(row=row, column=col, sticky="ew", padx=(0, 8) if col == 0 else (8, 0), pady=5)
-            tk.Label(card, text=title, bg=SURFACE, fg=ACCENT,
-                     font=("Segoe UI", 11, "bold")).pack(anchor="w")
-            tk.Label(card, text=MODULES[title].subtitle, bg=SURFACE, fg=MUTED,
-                     font=("Segoe UI", 9), wraplength=430, justify="left").pack(anchor="w", pady=(4, 8))
-            ttk.Button(card, text="Open module", style="Quiet.TButton",
-                       command=lambda name=title: open_module(name)).pack(anchor="w")
-
-        self._bind_mousewheel(content)
-
-    def _bind_mousewheel(self, widget: tk.Widget) -> None:
-        widget.bind("<MouseWheel>", self._scroll_overview, add="+")
-        for child in widget.winfo_children():
-            self._bind_mousewheel(child)
-
-    def _scroll_overview(self, event: tk.Event) -> str:
-        self._overview_canvas.yview_scroll(-1 * (event.delta // 120), "units")
-        return "break"
+            card = Panel(hoverable=True)
+            lay = QVBoxLayout(card)
+            lay.setContentsMargins(18, 14, 18, 16)
+            lay.setSpacing(4)
+            lay.addWidget(_label(title, "cardtitle"))
+            lay.addWidget(_label(MODULES[title].subtitle, "subtitle", True))
+            lay.addSpacing(8)
+            button = GlassButton("Open module")
+            button.clicked.connect(lambda _=False, name=title: open_module(name))
+            lay.addWidget(button, 0, Qt.AlignmentFlag.AlignLeft)
+            grid.addWidget(card, *divmod(index, 2))
+        col.addLayout(grid)
+        col.addStretch(1)
+        for c in (0, 1, 2):
+            team.setColumnStretch(c, 1)
+        for c in (0, 1):
+            grid.setColumnStretch(c, 1)
 
 
-class ModulePage(ttk.Frame):
-    def __init__(self, parent: tk.Misc, spec: ModuleSpec):
-        super().__init__(parent, style="App.TFrame", padding=(26, 22))
+class ModulePage(QWidget):
+    def __init__(self, spec: ModuleSpec):
+        super().__init__()
         self.spec = spec
-        self.widgets: dict[str, tk.Widget] = {}
-        self.gantt_canvas: tk.Canvas | None = None
+        self.widgets: dict[str, QWidget] = {}
+        self.gantt: GanttView | None = None
         self._build()
 
     def _build(self) -> None:
-        ttk.Label(self, text=self.spec.title, style="PageTitle.TLabel").pack(anchor="w")
-        ttk.Label(self, text=self.spec.subtitle, style="Subtitle.TLabel", wraplength=900).pack(
-            anchor="w", pady=(5, 18))
+        col = QVBoxLayout(self)
+        col.setContentsMargins(32, 24, 32, 28)
+        col.setSpacing(0)
+        col.addWidget(_label(self.spec.title, "title"))
+        col.addSpacing(4)
+        col.addWidget(_label(self.spec.subtitle, "subtitle", True))
+        col.addSpacing(18)
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.setHandleWidth(12)
+        split.setChildrenCollapsible(False)
+        col.addWidget(split, 1)
 
-        body = ttk.Panedwindow(self, orient="horizontal")
-        body.pack(fill="both", expand=True)
-
-        input_panel = ttk.Frame(body, style="Panel.TFrame", padding=16, width=480)
-        output_panel = ttk.Frame(body, style="Panel.TFrame", padding=16)
-        body.add(input_panel, weight=0)
-        body.add(output_panel, weight=1)
-        input_panel.pack_propagate(False)
-
-        ttk.Label(input_panel, text="INPUTS", style="SectionLabel.TLabel").pack(anchor="w", pady=(0, 10))
-
-        # Run controls live in a fixed footer so they never scroll out of view.
-        footer = ttk.Frame(input_panel, style="Panel.TFrame")
-        footer.pack(side="bottom", fill="x", pady=(10, 0))
-        ttk.Separator(footer, orient="horizontal").pack(fill="x", pady=(0, 10))
-        action_row = ttk.Frame(footer, style="Panel.TFrame")
-        action_row.pack(fill="x")
-        ttk.Button(action_row, text="▶  Run simulation", style="Accent.TButton", command=self.run_simulation).pack(side="left")
-        ttk.Button(action_row, text="Load example", style="Quiet.TButton", command=self.reset_sample).pack(side="left", padx=(8, 0))
-        self.status = ttk.Label(footer, text="Ready · input is checked when you run", style="Hint.TLabel", wraplength=430)
-        self.status.pack(anchor="w", pady=(10, 0))
-
-        form = tk.Frame(input_panel, bg=SURFACE)
-        form.pack(fill="both", expand=True)
-        form.rowconfigure(0, weight=1)
-        form.columnconfigure(0, weight=1)
-        canvas = tk.Canvas(form, bg=SURFACE, highlightthickness=0, borderwidth=0)
-        scrollbar = ttk.Scrollbar(form, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
-        fields_frame = ttk.Frame(canvas, style="Panel.TFrame", padding=(0, 0, 10, 0))
-        fields_window = canvas.create_window((0, 0), window=fields_frame, anchor="nw")
-
-        def update_scroll_region(_event: tk.Event) -> None:
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def fit_form_width(event: tk.Event) -> None:
-            canvas.itemconfigure(fields_window, width=event.width)
-
-        fields_frame.bind("<Configure>", update_scroll_region)
-        canvas.bind("<Configure>", fit_form_width)
-        canvas.bind("<Enter>", lambda _event: canvas.bind_all(
-            "<MouseWheel>", lambda event: canvas.yview_scroll(-1 * (event.delta // 120), "units")))
-        canvas.bind("<Leave>", lambda _event: canvas.unbind_all("<MouseWheel>"))
-
+        # ---- inputs
+        inputs = Panel()
+        left = QVBoxLayout(inputs)
+        left.setContentsMargins(20, 18, 8, 18)
+        left.setSpacing(0)
+        left.addWidget(_label("Inputs", "section"))
+        left.addSpacing(10)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        form_host = QWidget()
+        form = QVBoxLayout(form_host)
+        form.setContentsMargins(0, 0, 12, 0)
+        form.setSpacing(14)
+        mono_css = f'font-family: "{MONO_FONT}"; font-size: 13px;'  # global QSS would override setFont
         for field in self.spec.fields:
-            group = ttk.Frame(fields_frame, style="Panel.TFrame")
-            group.pack(fill="x", pady=(0, 12))
-            ttk.Label(group, text=field.label, style="FieldLabel.TLabel").pack(anchor="w", pady=(0, 2))
+            group = QVBoxLayout()
+            group.setSpacing(4)
+            group.addWidget(_label(field.label, "field"))
             if field.multiline and field.help:
-                ttk.Label(group, text=field.help, style="Hint.TLabel", wraplength=410,
-                          justify="left").pack(anchor="w", pady=(0, 4))
+                group.addWidget(_label(field.help, "hint", True))
             if field.multiline:
-                editor = tk.Frame(group, bg=SURFACE)
-                editor.pack(fill="x")
-                editor.columnconfigure(0, weight=1)
-                widget = tk.Text(editor, height=field.height, wrap="none", undo=True,
-                                 font=("Cascadia Mono", 10), bg="#0b0e11", fg=FG,
-                                 insertbackground=ACCENT, selectbackground="#3b3323",
-                                 relief="flat", padx=9, pady=7, highlightthickness=1,
-                                 highlightbackground=BORDER, highlightcolor=ACCENT)
-                widget.insert("1.0", field.default)
-                widget.grid(row=0, column=0, sticky="nsew")
-                y_bar = ttk.Scrollbar(editor, orient="vertical", command=widget.yview)
-                x_bar = ttk.Scrollbar(editor, orient="horizontal", command=widget.xview)
-                y_bar.grid(row=0, column=1, sticky="ns")
-                x_bar.grid(row=1, column=0, sticky="ew")
-                widget.configure(yscrollcommand=y_bar.set, xscrollcommand=x_bar.set)
-                # Tab moves between fields instead of typing a tab character.
-                widget.bind("<Tab>", self._focus_next)
-                widget.bind("<Shift-Tab>", self._focus_previous)
+                widget: QWidget = QPlainTextEdit(field.default)
+                widget.setStyleSheet(mono_css)
+                widget.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+                widget.setTabChangesFocus(True)  # Tab moves between fields instead of typing a tab
+                widget.setFixedHeight(round(QFontMetrics(QFont(MONO_FONT, 10)).lineSpacing() * field.height) + 24)
             elif field.hint:
-                values = [item.strip() for item in field.hint.split("·")]
-                widget = ttk.Combobox(group, values=values, state="readonly", style="Kernel.TCombobox")
-                widget.set(field.default)
-                widget.pack(fill="x")
+                widget = QComboBox()
+                widget.addItems([item.strip() for item in field.hint.split("·")])
+                widget.setCurrentText(field.default)
             else:
-                widget = ttk.Entry(group, style="Kernel.TEntry")
-                widget.insert(0, field.default)
-                widget.pack(fill="x")
-            widget.bind("<Control-Return>", self._shortcut_run)
+                widget = QLineEdit(field.default)
+            group.addWidget(widget)
             self.widgets[field.key] = widget
+            form.addLayout(group)
+        form.addStretch(1)
+        scroll.setWidget(form_host)
+        left.addWidget(scroll, 1)
+        rule = QFrame()
+        rule.setFixedHeight(1)
+        rule.setStyleSheet("background: rgba(255,255,255,0.08);")
+        left.addSpacing(10)
+        left.addWidget(rule)
+        left.addSpacing(12)
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 12, 0)
+        run = GlassButton("Run simulation", "accent")
+        run.clicked.connect(self.run_simulation)
+        example = GlassButton("Load example")
+        example.clicked.connect(self.reset_sample)
+        actions.addWidget(run)
+        actions.addWidget(example)
+        actions.addStretch(1)
+        left.addLayout(actions)
+        left.addSpacing(10)
+        self.status = _label("Ready · input is checked when you run", "hint", True)
+        left.addWidget(self.status)
 
-        heading = ttk.Frame(output_panel, style="Panel.TFrame")
-        heading.pack(fill="x", pady=(0, 6))
-        ttk.Label(heading, text="SIMULATION OUTPUT", style="SectionLabel.TLabel").pack(side="left")
+        # ---- output
+        outputs = Panel()
+        right = QVBoxLayout(outputs)
+        right.setContentsMargins(20, 18, 20, 18)
+        right.setSpacing(0)
+        right.addWidget(_label("Output", "section"))
+        right.addSpacing(10)
         if self.spec.title == "CPU Scheduling":
-            chart_panel = tk.Frame(output_panel, bg=SURFACE)
-            chart_panel.pack(fill="x", pady=(0, 10))
-            tk.Label(chart_panel, text="GANTT CHART", bg=SURFACE, fg=ACCENT,
-                     font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
-            self.gantt_canvas = tk.Canvas(chart_panel, height=112, bg="#0b0e11",
-                                          highlightthickness=1, highlightbackground=BORDER,
-                                          borderwidth=0)
-            self.gantt_canvas.pack(fill="x")
-            gantt_scroll = ttk.Scrollbar(chart_panel, orient="horizontal", command=self.gantt_canvas.xview)
-            gantt_scroll.pack(fill="x")
-            self.gantt_canvas.configure(xscrollcommand=gantt_scroll.set)
-
-        output_frame = tk.Frame(output_panel, bg=SURFACE)
-        output_frame.pack(fill="both", expand=True)
-        output_frame.rowconfigure(0, weight=1)
-        output_frame.columnconfigure(0, weight=1)
-        self.output = tk.Text(output_frame, wrap="none", state="disabled", font=("Cascadia Mono", 10),
-                              bg="#0b0e11", fg=FG, insertbackground=ACCENT, selectbackground="#3b3323",
-                              relief="flat", padx=14, pady=12, highlightthickness=1,
-                              highlightbackground=BORDER, highlightcolor=ACCENT)
-        self.output.tag_configure("error", foreground=RED)
-        self.output.tag_configure("success", foreground=GREEN)
-        self.output.tag_configure("heading", foreground=ACCENT, font=("Cascadia Mono", 10, "bold"))
-        self.output.tag_configure("good", foreground=GREEN, font=("Cascadia Mono", 10, "bold"))
-        self.output.tag_configure("bad", foreground=RED, font=("Cascadia Mono", 10, "bold"))
-        self.output.grid(row=0, column=0, sticky="nsew")
-        ybar = ttk.Scrollbar(output_frame, orient="vertical", command=self.output.yview)
-        xbar = ttk.Scrollbar(output_frame, orient="horizontal", command=self.output.xview)
-        ybar.grid(row=0, column=1, sticky="ns")
-        xbar.grid(row=1, column=0, sticky="ew")
-        self.output.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
+            right.addWidget(_label("Gantt chart", "hint"))
+            right.addSpacing(4)
+            self.gantt = GanttView()
+            strip = QScrollArea()
+            strip.setWidget(self.gantt)
+            strip.setWidgetResizable(True)
+            strip.setFixedHeight(self.gantt.height() + 14)
+            strip.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            right.addWidget(strip)
+            right.addSpacing(12)
+        self.output = QPlainTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setStyleSheet(mono_css)
+        self.output.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        right.addWidget(self.output, 1)
         self._write_output("Choose or edit the inputs, then run the simulation.\n\n"
                            "Add as many input rows as you need.")
 
-    # ----- keyboard helpers -------------------------------------------------
-    @staticmethod
-    def _focus_next(event: tk.Event) -> str:
-        event.widget.tk_focusNext().focus_set()
-        return "break"
-
-    @staticmethod
-    def _focus_previous(event: tk.Event) -> str:
-        event.widget.tk_focusPrev().focus_set()
-        return "break"
-
-    def _shortcut_run(self, _event: tk.Event) -> str:
-        self.run_simulation()
-        return "break"
+        split.addWidget(inputs)
+        split.addWidget(outputs)
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        split.setSizes([470, 760])
 
     # ----- actions ----------------------------------------------------------
     def read_values(self) -> dict[str, str]:
         values: dict[str, str] = {}
         for field in self.spec.fields:
-            widget = self.widgets[field.key]
-            if isinstance(widget, tk.Text):
-                values[field.key] = widget.get("1.0", "end-1c").strip()
+            w = self.widgets[field.key]
+            if isinstance(w, QPlainTextEdit):
+                values[field.key] = w.toPlainText().strip()
+            elif isinstance(w, QComboBox):
+                values[field.key] = w.currentText().strip()
             else:
-                values[field.key] = widget.get().strip()  # type: ignore[union-attr]
+                values[field.key] = w.text().strip()  # type: ignore[attr-defined]
         return values
+
+    def _set_status(self, text: str, color: str) -> None:
+        self.status.setText(text)
+        self.status.setStyleSheet(f"color: {color};")
 
     def run_simulation(self) -> None:
         try:
@@ -617,226 +864,208 @@ class ModulePage(ttk.Frame):
             message = f"Something unexpected happened while running: {exc}"
         else:
             self._write_output(result)
-            if self.gantt_canvas is not None:
+            if self.gantt is not None:
                 try:
                     self._draw_gantt(self.read_values())
                 except (ValueError, KeyError, IndexError):
-                    self._clear_gantt()
-            self.status.configure(text="Simulation complete", foreground=GREEN)
+                    self.gantt.clear()
+            self._set_status("Simulation complete", GREEN)
             return
-        if self.gantt_canvas is not None:
-            self._clear_gantt()
+        if self.gantt is not None:
+            self.gantt.clear()
         self._write_output(f"INPUT NEEDS ATTENTION\n\n{message}\n\nCorrect the inputs and try again.", "error")
-        self.status.configure(text="Could not run · check the input", foreground=RED)
+        self._set_status("Could not run · check the input", RED)
 
     def reset_sample(self) -> None:
         for field in self.spec.fields:
-            widget = self.widgets[field.key]
-            if isinstance(widget, tk.Text):
-                widget.delete("1.0", "end")
-                widget.insert("1.0", field.default)
-            elif isinstance(widget, ttk.Combobox):
-                widget.set(field.default)
+            w = self.widgets[field.key]
+            if isinstance(w, QPlainTextEdit):
+                w.setPlainText(field.default)
+            elif isinstance(w, QComboBox):
+                w.setCurrentText(field.default)
             else:
-                widget.delete(0, "end")  # type: ignore[union-attr]
-                widget.insert(0, field.default)  # type: ignore[union-attr]
-        self.status.configure(text="Example inputs restored", foreground=MUTED)
-        if self.gantt_canvas is not None:
-            self._clear_gantt()
+                w.setText(field.default)  # type: ignore[attr-defined]
+        self._set_status("Example inputs restored", MUTED)
+        if self.gantt is not None:
+            self.gantt.clear()
         self._write_output("Example inputs restored. Press Run simulation to view the results.")
 
-    def _clear_gantt(self) -> None:
-        if self.gantt_canvas is not None:
-            self.gantt_canvas.delete("all")
-            self.gantt_canvas.configure(scrollregion=(0, 0, 1, 1))
-
     def _draw_gantt(self, data: dict[str, str]) -> None:
-        if self.gantt_canvas is None:
-            return
+        assert self.gantt is not None
         processes, quantum, has_units = _scheduling_inputs(data)
         result = scheduling.run(data["algorithm"], processes, quantum)
-        canvas = self.gantt_canvas
-        canvas.delete("all")
-        left, right, top, bottom = 28, 20, 24, 66
-        unit = 48
-        extent = max(1, result.makespan)
-        width = left + extent * unit + right
-        colors = {process.pid: PROCESS_COLORS[index % len(PROCESS_COLORS)]
-                  for index, process in enumerate(processes)}
-        axis_unit = "minutes" if has_units else "time units"
-        canvas.create_text(left, 10, anchor="w", text=f"CPU time ({axis_unit})", fill=MUTED,
-                           font=("Segoe UI", 8))
-        if not result.timeline:
-            canvas.create_text(left, 48, anchor="w", text="No scheduled intervals", fill=MUTED)
-        for interval in result.timeline:
-            x1 = left + interval.start * unit
-            x2 = left + interval.end * unit
-            color = colors.get(interval.pid, "#353b44") if interval.pid else "#242a32"
-            canvas.create_rectangle(x1, top, x2, bottom, fill=color, outline="#0b0e11", width=2)
-            label = interval.pid or "IDLE"
-            if x2 - x1 >= 32:
-                canvas.create_text((x1 + x2) / 2, (top + bottom) / 2, text=label,
-                                  fill="#ffffff", font=("Segoe UI", 9, "bold"))
-        boundaries = {0, result.makespan}
-        for interval in result.timeline:
-            boundaries.add(interval.start)
-            boundaries.add(interval.end)
-        for tick in sorted(boundaries):
-            x = left + tick * unit
-            canvas.create_line(x, bottom + 2, x, bottom + 8, fill=MUTED)
-            canvas.create_text(x, bottom + 13, text=str(tick), fill=FG,
-                               font=("Cascadia Mono", 8))
-        canvas.configure(scrollregion=(0, 0, width, 92))
+        colors = {pr.pid: PROCESS_COLORS[i % len(PROCESS_COLORS)] for i, pr in enumerate(processes)}
+        self.gantt.set_data(result.timeline, colors, result.makespan, "minutes" if has_units else "time units")
 
     def _write_output(self, content: str, tag: str | None = None) -> None:
-        self.output.configure(state="normal")
-        self.output.delete("1.0", "end")
-        if tag:
-            self.output.insert("1.0", content, tag)
-        else:
-            self.output.insert("1.0", content)
-            self._highlight()
-        self.output.configure(state="disabled")
-
-    def _highlight(self) -> None:
-        """Colour section titles and the safe/unsafe verdict so the key lines stand out."""
-        for number, line in enumerate(self.output.get("1.0", "end-1c").splitlines(), start=1):
+        self.output.clear()
+        cursor = self.output.textCursor()
+        for number, line in enumerate(content.split("\n")):
+            fmt = QTextCharFormat()
             text = line.strip()
-            if not text:
-                continue
-            if "UNSAFE STATE" in text:
-                tag = "bad"
-            elif "SAFE STATE" in text:
-                tag = "good"
-            elif text.isupper() and not any(ch.isdigit() or ch == "|" for ch in text):
-                tag = "heading"
-            else:
-                continue
-            self.output.tag_add(tag, f"{number}.0", f"{number}.end")
+            kind = tag
+            if kind is None and text:
+                if "UNSAFE STATE" in text:
+                    kind = "bad"
+                elif "SAFE STATE" in text:
+                    kind = "good"
+                elif text.isupper() and not any(ch.isdigit() or ch == "|" for ch in text):
+                    kind = "heading"
+            if kind:
+                fmt.setForeground(QColor({"error": RED, "bad": RED, "good": GREEN, "heading": BLUE}[kind]))
+                if kind != "error":
+                    fmt.setFontWeight(QFont.Weight.Bold)
+            if number:
+                cursor.insertBlock()
+            cursor.insertText(line, fmt)
+        self.output.moveCursor(QTextCursor.MoveOperation.Start)
+        _fade_in(self.output, 220, 0.3)
 
 
-class KernelApp(tk.Tk):
+class KernelApp(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.title("KERNEL · Operating System Simulator")
-        # Fit the window to the screen (laptops and projectors are often 1366x768 or 1280x720).
-        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
-        width = min(1440, screen_w - 40)
-        height = min(920, screen_h - 100)  # leave room for the title bar and taskbar
-        x = max(0, (screen_w - width) // 2)
-        y = max(0, (screen_h - height) // 2 - 20)
-        self.geometry(f"{width}x{height}+{x}+{y}")
-        self.minsize(min(1100, width), min(640, height))
-        self.configure(bg=BG)
-        self._style()
+        self.setWindowTitle("KERNEL · Operating System Simulator")
+        screen = QApplication.primaryScreen().availableGeometry()
+        width, height = min(1440, screen.width() - 40), min(920, screen.height() - 40)
+        self.resize(width, height)
+        self.move(screen.x() + (screen.width() - width) // 2, screen.y() + (screen.height() - height) // 2)
+        self.setMinimumSize(min(1100, width), min(640, height))
+        if GLASS:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.order = ["Overview", *MODULES]
         self.current = "Overview"
-        self.pages: dict[str, ModulePage | OverviewPage] = {}
-        self.nav_buttons: dict[str, ttk.Button] = {}
+        self.pages: dict[str, QWidget] = {}
+        self.nav_buttons: dict[str, GlassButton] = {}
         self._build_shell()
-        self._bind_shortcuts()
-        self.show_module("Overview")
-
-    def _style(self) -> None:
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        style.configure("App.TFrame", background=BG)
-        style.configure("Panel.TFrame", background=SURFACE)
-        style.configure("Sidebar.TFrame", background=SIDEBAR)
-        style.configure("PageTitle.TLabel", background=BG, foreground=FG,
-                        font=("Segoe UI", 22, "bold"))
-        style.configure("Subtitle.TLabel", background=BG, foreground=MUTED,
-                        font=("Segoe UI", 11))
-        style.configure("SectionLabel.TLabel", background=SURFACE, foreground=ACCENT,
-                        font=("Segoe UI", 10, "bold"))
-        style.configure("FieldLabel.TLabel", background=SURFACE, foreground=FG,
-                        font=("Segoe UI", 10, "bold"))
-        style.configure("Hint.TLabel", background=SURFACE, foreground=MUTED,
-                        font=("Segoe UI", 9))
-        style.configure("Kernel.TEntry", fieldbackground="#0b0e11", foreground=FG,
-                        insertcolor=ACCENT, bordercolor=BORDER, lightcolor=ACCENT,
-                        darkcolor=BORDER, padding=(8, 7))
-        style.configure("Kernel.TCombobox", fieldbackground="#0b0e11", background=RAISED,
-                        foreground=FG, arrowcolor=ACCENT, bordercolor=BORDER,
-                        lightcolor=ACCENT, darkcolor=BORDER, padding=(8, 7))
-        style.map("Kernel.TCombobox", fieldbackground=[("readonly", "#0b0e11")],
-                  foreground=[("readonly", FG)])
-        style.configure("Accent.TButton", background=ACCENT, foreground="#211706",
-                        font=("Segoe UI", 10, "bold"), padding=(12, 8), borderwidth=0)
-        style.map("Accent.TButton", background=[("active", "#ffc04d")])
-        style.configure("Quiet.TButton", background=RAISED, foreground=FG,
-                        font=("Segoe UI", 9), padding=(10, 8), borderwidth=0)
-        style.map("Quiet.TButton", background=[("active", "#303742")],
-                  foreground=[("disabled", "#5b626c")])
-        style.configure("Nav.TButton", background=SIDEBAR, foreground=MUTED,
-                        font=("Segoe UI", 10), anchor="w", padding=(12, 10), borderwidth=0)
-        style.map("Nav.TButton", background=[("active", RAISED)], foreground=[("active", FG)])
-        style.configure("NavSelected.TButton", background="#2a2113", foreground=ACCENT,
-                        font=("Segoe UI", 10, "bold"), anchor="w", padding=(12, 10), borderwidth=0)
-        style.configure("TSeparator", background=BORDER)
+        for keys in ("Ctrl+Return", "Ctrl+Enter", "F5"):
+            QShortcut(QKeySequence(keys), self, self._run_current_simulation)
+        self.show_module("Overview", animate=False)
 
     def _build_shell(self) -> None:
-        header = tk.Frame(self, bg=SIDEBAR, height=56, highlightthickness=0)
-        header.pack(fill="x")
-        header.pack_propagate(False)
-        tk.Label(header, text="■  KERNEL", bg=SIDEBAR, fg=FG,
-                 font=("Segoe UI", 14, "bold")).pack(side="left", padx=(20, 10))
-        tk.Label(header, text="OPERATING SYSTEM SIMULATOR", bg=SIDEBAR, fg=MUTED,
-                 font=("Segoe UI", 9, "bold")).pack(side="left")
-        tk.Label(header, text="SIMULATION READY", bg=SIDEBAR, fg=GREEN,
-                 font=("Segoe UI", 9, "bold")).pack(side="right", padx=22)
-        ttk.Separator(self, orient="horizontal").pack(fill="x")
+        root = QWidget()
+        root.setObjectName("root")
+        self.setCentralWidget(root)
+        row = QHBoxLayout(root)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
 
-        workspace = ttk.Frame(self, style="App.TFrame")
-        workspace.pack(fill="both", expand=True)
-        workspace.columnconfigure(1, weight=1)
-        workspace.rowconfigure(0, weight=1)
-        sidebar = ttk.Frame(workspace, style="Sidebar.TFrame", width=248, padding=(14, 20))
-        sidebar.grid(row=0, column=0, sticky="ns")
-        sidebar.grid_propagate(False)
-        ttk.Label(sidebar, text="PROJECT", style="Hint.TLabel").pack(anchor="w", padx=8, pady=(0, 8))
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(232)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(12, 18, 12, 18)
+        side.setSpacing(2)
+        side.addWidget(_label("Project", "side"))
+        side.addSpacing(4)
         for title in self.order:
-            button = ttk.Button(sidebar, text=title, style="Nav.TButton",
-                                command=lambda name=title: self.show_module(name))
-            button.pack(fill="x", pady=2)
+            button = GlassButton(title, "nav")
+            button.setFixedHeight(34)
+            button.clicked.connect(lambda _=False, name=title: self.show_module(name))
+            side.addWidget(button)
             self.nav_buttons[title] = button
             if title == "Overview":
-                ttk.Label(sidebar, text="SIMULATOR MODULES", style="Hint.TLabel").pack(
-                    anchor="w", padx=8, pady=(14, 8))
-        ttk.Separator(sidebar, orient="horizontal").pack(fill="x", pady=(18, 12))
-        tk.Label(sidebar, text="Add rows as needed.\nInputs are checked before each run.",
-                 bg=SIDEBAR, fg=MUTED, justify="left", font=("Segoe UI", 9),
-                 wraplength=200).pack(anchor="w", padx=8)
+                side.addSpacing(16)
+                side.addWidget(_label("Modules", "side"))
+                side.addSpacing(4)
+        side.addStretch(1)
+        side.addWidget(_label("Add rows as needed. Inputs are checked before each run.", "side", True))
+        row.addWidget(sidebar)
 
-        self.content = ttk.Frame(workspace, style="App.TFrame")
-        self.content.grid(row=0, column=1, sticky="nsew")
-        self.content.rowconfigure(0, weight=1)
-        self.content.columnconfigure(0, weight=1)
-        overview = OverviewPage(self.content, self.show_module)
-        overview.grid(row=0, column=0, sticky="nsew")
-        self.pages["Overview"] = overview
+        content = QFrame()
+        content.setObjectName("content")
+        col = QVBoxLayout(content)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        header = QWidget()
+        header.setFixedHeight(48)
+        bar = QHBoxLayout(header)
+        bar.setContentsMargins(32, 0, 32, 0)
+        bar.addWidget(_label("Kernel", "brand"))
+        bar.addSpacing(8)
+        bar.addWidget(_label("Operating System Simulator", "subtitle"))
+        bar.addStretch(1)
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {GREEN}; font-size: 9px;")
+        bar.addWidget(dot)
+        bar.addWidget(_label("Ready", "subtitle"))
+        col.addWidget(header)
+        hairline = QFrame()
+        hairline.setFixedHeight(1)
+        hairline.setStyleSheet("background: rgba(255,255,255,0.07);")
+        col.addWidget(hairline)
+        self.stack = QStackedWidget()
+        col.addWidget(self.stack, 1)
+        row.addWidget(content, 1)
+
+        self.pages["Overview"] = OverviewPage(self.show_module)
         for title, spec in MODULES.items():
-            page = ModulePage(self.content, spec)
-            page.grid(row=0, column=0, sticky="nsew")
-            self.pages[title] = page
-
-    def _bind_shortcuts(self) -> None:
-        self.bind_all("<Control-Return>", lambda _event: self._run_current_simulation())
-        self.bind_all("<F5>", lambda _event: self._run_current_simulation())
+            self.pages[title] = ModulePage(spec)
+        for page in self.pages.values():
+            self.stack.addWidget(page)
 
     def _run_current_simulation(self) -> None:
         page = self.pages.get(self.current)
         if isinstance(page, ModulePage):
             page.run_simulation()
 
-    def show_module(self, title: str) -> None:
+    def show_module(self, title: str, animate: bool = True) -> None:
+        if animate and title == self.current:
+            return
         self.current = title
-        page = self.pages[title]
-        page.tkraise()
+        self.stack.setCurrentWidget(self.pages[title])
         for name, button in self.nav_buttons.items():
-            button.configure(style="NavSelected.TButton" if name == title else "Nav.TButton")
+            button.setChecked(name == title)
+        if animate:
+            _fade_in(self.pages[title], 180, 0.0)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if sys.platform != "win32":
+            return
+        try:  # dark title bar + acrylic backdrop; the glass layers above are translucent over it
+            import ctypes
+            hwnd = int(self.winId())
+            dwm = ctypes.windll.dwmapi
+            for attr, value in ((20, 1), (38, 3)):
+                dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(ctypes.c_int(value)), 4)
+            margins = (ctypes.c_int * 4)(-1, -1, -1, -1)
+            dwm.DwmExtendFrameIntoClientArea(hwnd, margins)
+        except Exception:
+            pass
+
+
+def _chevron_path() -> str:
+    """Small chevron image for combo boxes (QSS can't draw one)."""
+    path = Path(tempfile.gettempdir()) / "kernel_sim_chevron.png"
+    pix = QPixmap(20, 20)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QPen(QColor(MUTED), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+    p.drawPolyline([QPointF(5, 8), QPointF(10, 13), QPointF(15, 8)])
+    p.end()
+    pix.save(str(path))
+    return path.as_posix()
+
+
+def build_app() -> QApplication:
+    global UI_FONT, MONO_FONT
+    app = QApplication.instance() or QApplication(sys.argv)
+    families = set(QFontDatabase.families())
+    UI_FONT = next((f for f in ("SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI")
+                    if f in families), app.font().family())
+    MONO_FONT = next((f for f in ("SF Mono", "Cascadia Mono", "Consolas") if f in families), "Courier New")
+    app.setStyle("Fusion")
+    app.setStyleSheet(_QSS.substitute(
+        ui=UI_FONT, fg=FG, muted=MUTED, accent=ACCENT, sel="#1c3a5e", chevron=_chevron_path(),
+        sidebar_bg="rgba(16,18,22,0.52)" if GLASS else SIDEBAR,
+        content_bg="rgba(10,11,14,0.82)" if GLASS else BG))
+    return app
 
 
 def launch() -> None:
-    app = KernelApp()
-    app.mainloop()
+    app = build_app()
+    window = KernelApp()
+    window.show()
+    sys.exit(app.exec())

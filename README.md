@@ -1,10 +1,10 @@
 # KERNEL — Operating System Simulator
 
-A small Python desktop app for exploring operating-system concepts. It uses Tkinter and the Python standard library; it does not need extra Python packages.
+A small Python desktop app for exploring operating-system concepts. The interface uses PySide6 (Qt); the simulation modules use only the Python standard library.
 
 ## Run on Windows
 
-1. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/). During setup, enable **Add python.exe to PATH**. Tkinter should be included with the standard Windows installer.
+1. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/). During setup, enable **Add python.exe to PATH**. Then run `pip install PySide6` once (the interface uses Qt).
 2. Download this project from GitHub using **Code → Download ZIP**, then extract the ZIP. (If you already use Git, clone the repository instead.)
 3. Open the extracted `kernel-os-simulator` folder.
 4. Double-click `run.bat` to start the simulator.

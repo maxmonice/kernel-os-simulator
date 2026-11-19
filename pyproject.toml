@@ -3,7 +3,7 @@ name = "kernel-os-simulator"
 version = "1.0.0"
 description = "Interactive operating systems concepts simulator"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["PySide6>=6.6"]
 
 [tool.ruff]
 line-length = 100
