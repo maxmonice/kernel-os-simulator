@@ -1,4 +1,4 @@
-"""Fixed and variable partition allocation with fragmentation summaries."""
+"""Fixed and variable partition allocation on an address-based memory map, with fragmentation summaries."""
 
 from __future__ import annotations
 
@@ -27,6 +27,27 @@ class FragmentationResult:
     largest_hole: int
     external_fragmentation: int
     internal_fragmentation: int
+    memory_map: tuple[tuple[int, int, str], ...] = ()  # (base, size, "Free" or process id), by address
+
+
+class _Block:
+    __slots__ = ("base", "size", "label", "source")
+
+    def __init__(self, base: int, size: int, label: str, source: int) -> None:
+        self.base, self.size, self.label, self.source = base, size, label, source
+
+    @property
+    def free(self) -> bool:
+        return self.label == "Free"
+
+
+def _next_fit(blocks: list[_Block], address: int, size: int) -> int | None:
+    """First fitting hole at or after `address`, then wrap around to the holes before it."""
+    for wrapped in (False, True):
+        for i, b in enumerate(blocks):
+            if b.free and b.size >= size and (b.base < address) == wrapped:
+                return i
+    return None
 
 
 def allocate(
@@ -48,47 +69,42 @@ def allocate(
     for pid, size in processes:
         require_positive(size, f"Memory required by {pid}")
 
-    free = blocks.copy()
+    memory: list[_Block] = []
+    base = 0
+    for i, size in enumerate(blocks):  # blocks sit back to back from address 0
+        memory.append(_Block(base, size, "Free", i + 1))
+        base += size
     allocations: list[Allocation] = []
     unallocated: list[str] = []
     internal = 0
-    next_start = 0
+    next_address = 0
     for pid, requested in processes:
-        candidates = [i for i, available in enumerate(free) if available >= requested]
-        if not candidates:
+        fits = [i for i, b in enumerate(memory) if b.free and b.size >= requested]
+        if not fits:
             unallocated.append(pid)
             continue
-        if strategy == "Next fit":
-            index = None
-            for step in range(len(free)):
-                candidate = (next_start + step) % len(free)
-                if free[candidate] >= requested:
-                    index = candidate
-                    break
-            if index is None:
-                unallocated.append(pid)
-                continue
-        elif strategy == "First fit":
-            index = candidates[0]
+        if strategy == "First fit":
+            index = fits[0]
         elif strategy == "Best fit":
-            index = min(candidates, key=lambda i: (free[i], i))
+            index = min(fits, key=lambda i: (memory[i].size, i))
+        elif strategy == "Worst fit":
+            index = max(fits, key=lambda i: (memory[i].size, -i))
         else:
-            index = max(candidates, key=lambda i: (free[i], -i))
-        block_size = free[index]
-        if mode == "Fixed partitions":
-            waste = block_size - requested
-            internal += waste
-            free[index] = 0
-        else:
-            waste = 0
-            free[index] -= requested
-        if strategy == "Next fit":
-            next_start = (index + 1) % len(free)
-        allocations.append(Allocation(pid, requested, index + 1, block_size, waste))
-    holes = tuple(size for size in free if size > 0)
+            index = _next_fit(memory, next_address, requested)
+        hole = memory[index]
+        waste = hole.size - requested if mode == "Fixed partitions" else 0
+        internal += waste
+        allocations.append(Allocation(pid, requested, hole.source, hole.size, waste))
+        if mode == "Variable partitions" and hole.size > requested:  # split: allocated part + free remainder
+            memory.insert(index + 1, _Block(hole.base + requested, hole.size - requested, "Free", hole.source))
+            hole.size = requested
+        hole.label = pid
+        next_address = hole.base + requested
+    holes = tuple(b.size for b in memory if b.free)
     total_free = sum(holes)
     largest = max(holes, default=0)
     return FragmentationResult(
         mode, strategy, tuple(allocations), tuple(unallocated), holes,
-        total_free, largest, total_free - largest if mode == "Variable partitions" else 0, internal
+        total_free, largest, total_free - largest if mode == "Variable partitions" else 0, internal,
+        tuple((b.base, b.size, b.label) for b in memory),
     )

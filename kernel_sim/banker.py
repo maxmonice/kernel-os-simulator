@@ -15,6 +15,9 @@ class BankerResult:
     safe_sequence: tuple[str, ...]
     blocked: tuple[str, ...]
     trace: tuple[str, ...]
+    allocation: tuple[tuple[int, ...], ...] = ()
+    maximum: tuple[tuple[int, ...], ...] = ()
+    work_at_run: tuple[tuple[int, ...] | None, ...] = ()  # Work vector when each process was picked; None if it never ran
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,7 @@ def check_safety(
     work = available.copy()
     finished = [False] * len(process_ids)
     sequence: list[str] = []
+    work_at_run: list[tuple[int, ...] | None] = [None] * len(process_ids)
     trace: list[str] = [f"Start: Work = Available = {work}."]
     changed = True
     while changed:
@@ -65,6 +69,7 @@ def check_safety(
             if finished[i]:
                 continue
             if all(need[i][j] <= work[j] for j in range(resource_count)):
+                work_at_run[i] = tuple(work)
                 work = [work[j] + allocation[i][j] for j in range(resource_count)]
                 finished[i] = True
                 sequence.append(pid)
@@ -74,7 +79,8 @@ def check_safety(
                 trace.append(f"{pid}: Need {need[i]} is not <= Work {work}; it cannot finish yet.")
     blocked = tuple(process_ids[i] for i, done in enumerate(finished) if not done)
     trace.append("All processes finished: safe state." if not blocked else f"No remaining process fits Work; unsafe state. Blocked: {list(blocked)}.")
-    return BankerResult(not blocked, tuple(available), tuple(tuple(row) for row in need), tuple(sequence), blocked, tuple(trace))
+    return BankerResult(not blocked, tuple(available), tuple(tuple(row) for row in need), tuple(sequence), blocked, tuple(trace),
+                        tuple(tuple(r) for r in allocation), tuple(tuple(r) for r in maximum), tuple(work_at_run))
 
 
 def request_resources(

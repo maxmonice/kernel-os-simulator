@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFrame,
 
 from . import banker, disk_scheduling, fragmentation, multiprogramming, page_replacement, paging, scheduling, segmentation
 from .models import Process
+from .validation import parse_size
 
 FG = "#f2f3f5"
 MUTED = "#8b919b"
@@ -57,6 +58,7 @@ class ModuleSpec:
     run: Callable[[dict[str, str]], str]
     gantt: Callable[[dict[str, str]], tuple] | None = None  # -> (intervals, pids, makespan, axis label)
     preview: Callable[[dict[str, str]], str] | None = None  # live output while the inputs are edited
+    head_chart: Callable[[dict[str, str]], tuple] | None = None  # -> (head path, low cylinder, high cylinder)
 
 
 def _int(value: str, label: str) -> int:
@@ -144,7 +146,7 @@ def _run_scheduling(data: dict[str, str]) -> str:
     processes, quantum, has_units = _scheduling_inputs(data)
     result = scheduling.run(data["algorithm"], processes, quantum)
     lines = [result.algorithm, f"Time unit: {_time_label(has_units)}.",
-             "Priority convention: lower number means higher priority.", "",
+             "Priority convention: higher number means higher priority.", "",
              _format_table(["Process", "AT", "BT", "Priority", "CT", "TAT", "WT", "RT"],
                            [[r.pid, r.arrival, r.burst, r.priority, r.completion, r.turnaround, r.waiting, r.response] for r in result.rows])]
     lines.extend(["", f"Average waiting time:    {result.average_waiting:.2f}",
@@ -266,7 +268,9 @@ def _preview_multiprogramming(data: dict[str, str]) -> str:
 def _run_banker(data: dict[str, str]) -> str:
     ids, total, result, request_pid, request_status, trace = _banker_eval(data)
     resources = [f"R{i + 1}" for i in range(len(total))]
-    rows = [[pid, *result.need[i]] for i, pid in enumerate(ids)]
+    rows = [[pid, *result.allocation[i], *result.maximum[i], *result.need[i],
+             *(result.work_at_run[i] or ["—"] * len(total))] for i, pid in enumerate(ids)]
+    columns = [f"{name} {r}" for name in ("Alloc", "Max", "Need", "Work") for r in resources]
     status = "SAFE STATE" if result.safe else "UNSAFE STATE"
     sequence = " → ".join(result.safe_sequence) if result.safe else "No complete safe sequence exists."
     blocked = f"\nProcesses that could not finish: {', '.join(result.blocked)}" if result.blocked else ""
@@ -274,24 +278,28 @@ def _run_banker(data: dict[str, str]) -> str:
     if request_pid:
         heading = f"{request_status}\n\n{heading} ({'state after request' if request_status.startswith('REQUEST GRANTED') else 'unchanged current state'})"
     return (heading + f"\n\nTotal resources:     {_vector(total)}"
-            f"\nAvailable resources: {_vector(result.available)}\n\nNEED MATRIX\n"
-            + _format_table(["Process", *resources], rows)
+            f"\nAvailable resources: {_vector(result.available)}\n\nALLOCATION · MAXIMUM · NEED · WORK AT RUN\n"
+            + _format_table(["Process", *columns], rows)
             + f"\n\nSafe sequence: {sequence}{blocked}"
             + "\n\n" + ("REQUEST + SAFETY TRACE" if request_pid else "SAFETY TRACE")
             + "\n" + "\n".join(trace))
 
 
 def _run_paging(data: dict[str, str]) -> str:
-    page_size = _int(data["page_size"], "Page size")
+    page_size = parse_size(data["page_size"], "Page size")
     table = [tuple(row) for row in _number_rows(data["page_table"], "Page table", 2)]
-    result = paging.translate(page_size, table, _int(data["logical_address"], "Logical address"))
-    mapping = _format_table(["Page", "Frame"], [[p, f] for p, f in table])
-    return (f"PAGE TABLE\n{mapping}\n\nLogical address {result['logical_address']}"
-            f" = page {result['page']} × page size {result['page_size']} + offset {result['offset']}\n"
-            f"Page {result['page']} maps to frame {result['frame']}.\n"
+    r = paging.translate(page_size, table, _int(data["logical_address"], "Logical address"),
+                         parse_size(data["logical_size"], "Logical memory size"),
+                         parse_size(data["physical_size"], "Physical memory size"))
+    head = (f"PAGE TABLE\n{_format_table(['Page', 'Frame'], [[p, f] for p, f in table])}\n\n"
+            f"Pages (logical): {r['pages']}    Frames (physical): {r['frames']}\n"
+            f"Logical address {r['logical_address']} = page {r['page']} × page size {r['page_size']} + offset {r['offset']}\n")
+    if r["frame"] is None:
+        return head + f"\nPAGE FAULT: page {r['page']} is not in the page table."
+    return (head + f"Page {r['page']} maps to frame {r['frame']}.\n"
             f"Physical address = frame × page size + offset\n"
-            f"                 = {result['frame']} × {result['page_size']} + {result['offset']}\n"
-            f"                 = {result['physical_address']}")
+            f"                 = {r['frame']} × {r['page_size']} + {r['offset']}\n"
+            f"                 = {r['physical_address']}")
 
 
 def _run_page_replacement(data: dict[str, str]) -> str:
@@ -302,16 +310,21 @@ def _run_page_replacement(data: dict[str, str]) -> str:
              "—" if s.replaced is None else s.replaced] for s in result.steps]
     return (f"{result.algorithm} · {len(result.steps)} references\n\n"
             + _format_table(headers, rows)
-            + f"\n\nHits: {result.hits}    Page faults: {result.faults}    Fault rate: {result.fault_rate:.1%}")
+            + f"\n\nHits: {result.hits}    Page faults: {result.faults}    Hit ratio: {result.hits / len(result.steps):.1%}"
+            f"    Fault rate: {result.fault_rate:.1%}")
 
 
 def _run_segmentation(data: dict[str, str]) -> str:
     segments = [tuple(row) for row in _number_rows(data["segments"], "Segment table", 3)]
-    result = segmentation.translate(segments, _int(data["segment"], "Segment number"), _int(data["offset"], "Offset"))
+    result = segmentation.translate(segments, _int(data["segment"], "Segment number"), _int(data["offset"], "Offset"),
+                                    parse_size(data["ram"], "Size of RAM"))
     table = _format_table(["Segment", "Base", "Limit"], [[n, base, limit] for n, base, limit in segments])
+    layout = _format_table(["Address range", "Allocation", "Size"],
+                           [[f"{a}–{b - 1}", label, b - a] for a, b, label in result["memory_map"]])
     return (f"SEGMENT TABLE\n{table}\n\nLogical address = (segment {result['segment']}, offset {result['offset']})\n"
             f"Bounds check: {result['offset']} < {result['limit']} ✓\n"
-            f"Physical address = base + offset = {result['base']} + {result['offset']} = {result['physical_address']}")
+            f"Physical address = base + offset = {result['base']} + {result['offset']} = {result['physical_address']}"
+            f"\n\nPHYSICAL MEMORY MAP\n{layout}")
 
 
 def _run_fragmentation(data: dict[str, str]) -> str:
@@ -322,7 +335,9 @@ def _run_fragmentation(data: dict[str, str]) -> str:
              a.internal_waste if result.mode == "Fixed partitions" else 0] for a in result.allocations]
     lines = [f"{result.mode} · {result.strategy}", "",
              _format_table(["Process", "Requested", "Block", "Block size", "Internal waste"], rows)]
-    lines.append("\nUnallocated: " + (", ".join(result.unallocated) if result.unallocated else "none"))
+    lines.extend(["", "MEMORY MAP", _format_table(["Block", "Base", "Size", "Allocation"],
+                                                  [[i, base, size, label] for i, (base, size, label) in enumerate(result.memory_map)]), ""])
+    lines.append("Unallocated: " + (", ".join(result.unallocated) if result.unallocated else "none"))
     if result.mode == "Fixed partitions":
         lines.append(f"Total internal fragmentation: {result.internal_fragmentation}")
     else:
@@ -332,17 +347,26 @@ def _run_fragmentation(data: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-def _run_disk(data: dict[str, str]) -> str:
+def _disk_result(data: dict[str, str]):
     requests = [_int(x, "Disk request") for x in data["requests"].replace("\n", ",").split(",") if x.strip()]
-    result = disk_scheduling.schedule(requests, _int(data["head"], "Head position"), data["algorithm"],
-                                     _int(data["low"], "Lower cylinder"), _int(data["high"], "Upper cylinder"), data["direction"])
+    return disk_scheduling.schedule(requests, _int(data["head"], "Head position"), data["algorithm"],
+                                    _int(data["low"], "Lower cylinder"), _int(data["high"], "Upper cylinder"), data["direction"])
+
+
+def _head_chart_disk(data: dict[str, str]) -> tuple:
+    return _disk_result(data).path, _int(data["low"], "Lower cylinder"), _int(data["high"], "Upper cylinder")
+
+
+def _run_disk(data: dict[str, str]) -> str:
+    result = _disk_result(data)
     legs = " → ".join(map(str, result.path))
     movements = " + ".join(str(abs(result.path[i] - result.path[i - 1])) for i in range(1, len(result.path)))
     steps = [[i, result.path[i], abs(result.path[i] - result.path[i - 1])] for i in range(1, len(result.path))]
     return (f"{result.algorithm} · direction {data['direction']}\n\n"
             + _format_table(["Step", "Head moves to", "Movement"], steps)
             + "\n\nService order: " + " → ".join(map(str, result.service_order))
-            + f"\nHead path: {legs}\n\nMovement: {movements} = {result.total_movement} cylinders")
+            + f"\nHead path: {legs}\n\nMovement: {movements} = {result.total_movement} cylinders"
+            f"\nAverage seek: {result.total_movement / max(1, len(steps)):.2f} cylinders per move")
 
 
 def _num(x: float) -> str:
@@ -403,9 +427,11 @@ MODULES: dict[str, ModuleSpec] = {
     ),
     "Paging": ModuleSpec(
         "Paging",
-        "Map logical pages to physical frames and translate a logical address.",
+        "Map logical pages to physical frames, validate against memory sizes and translate a logical address.",
         (
-            FieldSpec("page_size", "Page size", "4"),
+            FieldSpec("logical_size", "Logical memory size", "16", help="Bytes, or 4KB / 2MB / 1GB."),
+            FieldSpec("physical_size", "Physical memory size", "32", help="Bytes, or 4KB / 2MB / 1GB."),
+            FieldSpec("page_size", "Page size", "4", help="Bytes, or 4KB / 2MB / 1GB."),
             FieldSpec("logical_address", "Logical address", "3"),
             FieldSpec("page_table", "Page table", "0,5\n1,6\n2,3\n3,2", True, 7,
                       help="One mapping per line: page, frame.", columns=("Page", "Frame"), add_label="+ Add Page", auto_id="#"),
@@ -425,8 +451,9 @@ MODULES: dict[str, ModuleSpec] = {
     ),
     "Segmentation": ModuleSpec(
         "Segmentation",
-        "Validate a segment and offset against its base and limit.",
+        "Check segments fit in RAM without overlap, then validate a segment and offset against its base and limit.",
         (
+            FieldSpec("ram", "Size of RAM", "8KB", help="Bytes, or 4KB / 2MB / 1GB."),
             FieldSpec("segment", "Segment number", "1"),
             FieldSpec("offset", "Offset within segment", "399"),
             FieldSpec("segments", "Segment table", "0,1400,1000\n1,6300,400\n2,4300,400\n3,3200,1100\n4,4700,1000", True, 7,
@@ -459,7 +486,7 @@ MODULES: dict[str, ModuleSpec] = {
             FieldSpec("requests", "Requests", "98,183,37,122,14,124,65,67", True, 7,
                       help="Comma-separated or one cylinder per line.", columns=("Cylinder request",), add_label="+ Add Request"),
         ),
-        _run_disk, preview=_preview_disk,
+        _run_disk, preview=_preview_disk, head_chart=_head_chart_disk,
     ),
     "Multiprogramming": ModuleSpec(
         "Multiprogramming",
@@ -789,6 +816,85 @@ class GanttView(QWidget):
             p.drawText(QRectF(x - 20, self.BOTTOM - 11, 40, 14), Qt.AlignmentFlag.AlignCenter, str(tick))
 
 
+class HeadChartView(QWidget):
+    """Disk-head chart: tracks along the top axis, one row per move, the path drawn left-to-right in steps."""
+
+    LEFT, RIGHT, TOP, BOTTOM = 28, 28, 34, 18
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._data: tuple | None = None
+        self._progress = 0.0  # in segments
+        self._anim = QPropertyAnimation(self, b"progress", self)
+        self.setMinimumHeight(250)
+
+    def _get_progress(self) -> float:
+        return self._progress
+
+    def _set_progress(self, v: float) -> None:
+        self._progress = v
+        self.update()
+
+    progress = Property(float, _get_progress, _set_progress)
+
+    def clear(self) -> None:
+        self._data = None
+        self.update()
+
+    def set_data(self, path, low: int, high: int) -> None:
+        self._data = (list(path), low, max(low + 1, high))
+        self._anim.stop()
+        self._anim.setDuration(min(1400, 250 + 60 * len(path)))
+        self._anim.setEasingCurve(QEasingCurve.Type.OutQuart)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(float(max(0, len(path) - 1)))
+        self._anim.start()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        small = QFont(self.font())
+        small.setPixelSize(11)
+        p.setFont(small)
+        if self._data is None or len(self._data[0]) < 2:
+            p.setPen(_color(MUTED))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Run an algorithm to plot head movement.")
+            return
+        path, low, high = self._data
+        n = len(path)
+        width, height = self.width() - self.LEFT - self.RIGHT, self.height() - self.TOP - self.BOTTOM
+
+        def pt(i: int) -> QPointF:
+            return QPointF(self.LEFT + width * (path[i] - low) / (high - low), self.TOP + 8 + i * (height - 8) / (n - 1))
+
+        p.setPen(_color("white", 0.12))
+        p.drawLine(self.LEFT, self.TOP, self.LEFT + width, self.TOP)
+        for i in range(5):
+            x = self.LEFT + width * i / 4
+            p.setPen(_color("white", 0.08))
+            p.drawLine(QPointF(x, self.TOP - 4), QPointF(x, self.TOP + height))
+            p.setPen(_color(MUTED))
+            p.drawText(QRectF(x - 25, self.TOP - 24, 50, 16), Qt.AlignmentFlag.AlignCenter, str(round(low + (high - low) * i / 4)))
+        done = int(self._progress)
+        part = self._progress - done
+        p.setPen(QPen(QColor(ACCENT), 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        for i in range(min(done, n - 1)):
+            p.drawLine(pt(i), pt(i + 1))
+        if done < n - 1 and part > 0:
+            a, b = pt(done), pt(done + 1)
+            p.drawLine(a, QPointF(a.x() + (b.x() - a.x()) * part, a.y() + (b.y() - a.y()) * part))
+        for i in range(min(n, done + 1)):
+            c = pt(i)
+            r = 6 if i == 0 else 4
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(GREEN if i == 0 else ACCENT))
+            p.drawEllipse(c, r, r)
+            p.setPen(_color(FG, 0.9))
+            right = c.x() < self.LEFT + width - 40
+            box = QRectF(c.x() + 8 if right else c.x() - 48, c.y() - 8, 40, 16)
+            p.drawText(box, (Qt.AlignmentFlag.AlignLeft if right else Qt.AlignmentFlag.AlignRight) | Qt.AlignmentFlag.AlignVCenter, str(path[i]))
+
+
 _KIND_COLOR = {"error": RED, "bad": RED, "good": GREEN, "heading": BLUE}
 
 
@@ -806,6 +912,37 @@ def _line_kind(text: str, tag: str | None) -> str | None:
 
 def _is_divider(line: str) -> bool:
     return "+" in line and set(line.strip()) <= set("-+")
+
+
+class FitTable(QTableWidget):
+    """Read-only result table: columns fit their text, fill spare width, and scroll sideways instead of eliding."""
+
+    def __init__(self, rows: int, cols: int, base_height: int) -> None:
+        super().__init__(rows, cols)
+        self._need, self._base = [], base_height
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setTextElideMode(Qt.TextElideMode.ElideNone)
+
+    def fit(self) -> None:
+        self.resizeColumnsToContents()
+        self._need = [self.columnWidth(c) + 24 for c in range(self.columnCount())]
+        self._layout()
+
+    def _layout(self) -> None:
+        if not self._need:
+            return
+        avail, total = self.width() - 2, sum(self._need)
+        extra = max(0, avail - total) // len(self._need)
+        for c, w in enumerate(self._need):
+            self.setColumnWidth(c, w + extra)
+        bar = self.horizontalScrollBar().sizeHint().height() if total > avail else 0
+        self.setFixedHeight(self._base + bar)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self._layout()
 
 
 class ResultsView(QScrollArea):
@@ -870,23 +1007,23 @@ class ResultsView(QScrollArea):
         return label
 
     def _table(self, headers: list[str], rows: list[list[str]]) -> QTableWidget:
-        table = QTableWidget(len(rows), len(headers))
+        table = FitTable(len(rows), len(headers), self.HEAD + self.ROW * len(rows) + 4)
         table.setHorizontalHeaderLabels(headers)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(self.ROW)
         table.horizontalHeader().setFixedHeight(self.HEAD)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for r, row in enumerate(rows):
             for c, value in enumerate(row[:len(headers)]):
                 item = QTableWidgetItem(value)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if value in ("Hit", "Fault"):
+                    item.setForeground(QColor(GREEN if value == "Hit" else RED))
                 table.setItem(r, c, item)
-        table.setFixedHeight(self.HEAD + self.ROW * len(rows) + 4)
+        table.fit()
         return table
 
 
@@ -1143,7 +1280,7 @@ class ModulePage(QWidget):
         super().__init__()
         self.spec = spec
         self.widgets: dict[str, QWidget] = {}
-        self.gantt: GanttView | None = None
+        self.gantt: GanttView | HeadChartView | None = None
         self._build()
 
     def _build(self) -> None:
@@ -1234,6 +1371,16 @@ class ModulePage(QWidget):
             strip.setFixedHeight(self.gantt.height() + 14)
             strip.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             box.addWidget(strip)
+            col.addSpacing(12)
+            col.addWidget(chart)
+        elif self.spec.head_chart:
+            chart = Panel()
+            box = QVBoxLayout(chart)
+            box.setContentsMargins(20, 14, 20, 14)
+            box.setSpacing(6)
+            box.addWidget(_label("Head movement", "section"))
+            self.gantt = HeadChartView()  # same slot as the Gantt chart: cleared and redrawn with each run
+            box.addWidget(self.gantt)
             col.addSpacing(12)
             col.addWidget(chart)
         self._preview(keep_status=True)
@@ -1344,8 +1491,12 @@ class ModulePage(QWidget):
         self._write_output("All inputs cleared. Enter your own data, or open Add Input and press Load example.")
         self._preview(keep_status=True)
 
-    def _draw_gantt(self, data: dict[str, str]) -> None:
-        assert self.gantt is not None and self.spec.gantt is not None
+    def _draw_gantt(self, data: dict[str, str]) -> None:  # Gantt chart, or the head chart on the disk page
+        assert self.gantt is not None
+        if self.spec.head_chart:
+            self.gantt.set_data(*self.spec.head_chart(data))
+            return
+        assert self.spec.gantt is not None
         timeline, pids, makespan, label = self.spec.gantt(data)
         colors = {pid: PROCESS_COLORS[i % len(PROCESS_COLORS)] for i, pid in enumerate(pids)}
         self.gantt.set_data(timeline, colors, makespan, label)

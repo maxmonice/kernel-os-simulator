@@ -54,14 +54,15 @@ def simulate(references: list[int], frame_count: int, algorithm: str) -> Replace
             elif algorithm == "LRU":
                 slot = min(range(frame_count), key=lambda k: last_used[frames[k]])  # type: ignore[index]
             else:
-                next_use: list[tuple[int, int]] = []
+                slot, farthest = 0, -1
                 for slot_index, resident in enumerate(frames):
                     try:
                         when = references.index(resident, i + 1)  # type: ignore[arg-type]
-                    except ValueError:
-                        when = float("inf")
-                    next_use.append((when, slot_index))
-                slot = max(next_use)[1]
+                    except ValueError:  # never used again: take the first such frame
+                        slot = slot_index
+                        break
+                    if when > farthest:
+                        slot, farthest = slot_index, when
             replaced = frames[slot]
             frames[slot] = page
             loaded_at[page] = i

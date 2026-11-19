@@ -125,7 +125,7 @@ def shortest_remaining_time_first(processes: list[Process]) -> ScheduleResult:
 
 def priority_non_preemptive(processes: list[Process]) -> ScheduleResult:
     _validate(processes)
-    return _result(processes, "Priority (non-preemptive; lower value is higher)", _non_preemptive(processes, lambda p: (p.priority, p.arrival)))
+    return _result(processes, "Priority (non-preemptive; higher value is higher)", _non_preemptive(processes, lambda p: (-p.priority, p.arrival)))
 
 
 def priority_preemptive(processes: list[Process]) -> ScheduleResult:
@@ -141,11 +141,11 @@ def priority_preemptive(processes: list[Process]) -> ScheduleResult:
             timeline.append(Segment(time, next_time, None))
             time = next_time
             continue
-        current = min(ready, key=lambda p: (p.priority, p.arrival, order[p.pid]))
+        current = min(ready, key=lambda p: (-p.priority, p.arrival, order[p.pid]))
         timeline.append(Segment(time, time + 1, current.pid))
         remaining[current.pid] -= 1
         time += 1
-    return _result(processes, "Priority (preemptive; lower value is higher)", timeline)
+    return _result(processes, "Priority (preemptive; higher value is higher)", timeline)
 
 
 def round_robin(processes: list[Process], quantum: int) -> ScheduleResult:

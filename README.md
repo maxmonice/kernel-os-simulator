@@ -28,7 +28,7 @@ The CPU scheduling page shows a time-scaled Gantt chart with individual process 
 Screenshots are in `docs/`. **Reset** clears every text field in the current module and **Load example** restores the sample data. Every module accepts any number of rows/items; invalid input shows an error message instead of crashing.
 
 ### 1. CPU Scheduling
-**Input:** algorithm, time quantum (Round Robin), and one process per line: `ID,arrival,burst,priority`. **Process:** the ready process is chosen by arrival (FCFS), shortest burst (SJF), shortest remaining time (SRTF), lowest priority number (Priority, both modes) or by rotating time slices (Round Robin); gaps become CPU idle time. **Output:** completion, turnaround (CT-AT), waiting (TAT-BT) and response times, averages, CPU utilization and a Gantt chart.
+**Input:** algorithm, time quantum (Round Robin), and one process per line: `ID,arrival,burst,priority`. **Process:** the ready process is chosen by arrival (FCFS), shortest burst (SJF), shortest remaining time (SRTF), highest priority number (Priority, both modes) or by rotating time slices (Round Robin); gaps become CPU idle time. **Output:** completion, turnaround (CT-AT), waiting (TAT-BT) and response times, averages, CPU utilization and a Gantt chart.
 Sample: `P1,0,5,2 / P2,1,3,1 / P3,2,8,3 / P4,3,6,2` → average waiting FCFS 5.75, SJF 5.25, SRTF 5.00, Round Robin (q=2) 9.75.
 ![CPU Scheduling](docs/cpu-scheduling.png)
 
@@ -39,7 +39,7 @@ Sample: 5 processes, total `10,5,7` (textbook example) → safe, sequence `P1 �
 ![Banker's with a request](docs/bankers-request.png)
 
 ### 3. Paging
-**Input:** page size, page table (`page,frame` per line), logical address. **Process:** page = address // size, offset = address % size, physical = frame x size + offset; unmapped page = page fault. **Output:** the calculation step by step.
+**Input:** logical and physical memory sizes, page size (bytes or `4KB`), page table (`page,frame` per line), logical address. **Process:** page = address // size, offset = address % size, physical = frame x size + offset; unmapped page = page fault. **Output:** the calculation step by step.
 Sample: size 1024, table `0,5 / 1,2`, address 1030 → page 1, offset 6, frame 2, physical 2054.
 ![Paging](docs/paging.png)
 
@@ -51,7 +51,7 @@ Sample: `7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1`, 3 frames → FIFO 15, LRU 12,
 ![Page Replacement: Optimal](docs/page-replacement-optimal.png)
 
 ### 5. Segmentation
-**Input:** segment table (`segment,base,limit`), segment number and offset. **Process:** valid only if offset < limit; physical = base + offset. **Output:** the physical address, or an out-of-range error.
+**Input:** RAM size, segment table (`segment,base,limit`), segment number and offset. **Process:** segments must fit in RAM without overlapping; the access is valid only if offset < limit; physical = base + offset. **Output:** the physical address and the physical memory map, or an error.
 Sample: segment 1 (base 6300, limit 400), offset 99 → 6399; offset 400 → error.
 ![Segmentation](docs/segmentation.png)
 

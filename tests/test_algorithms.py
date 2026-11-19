@@ -20,8 +20,8 @@ PROCS = [Process("P1", 0, 5, 2), Process("P2", 1, 3, 1), Process("P3", 2, 8, 3),
 class Scheduling(unittest.TestCase):
     def test_known_averages(self):
         expected = {"FCFS": (5.75, 11.25), "SJF (non-preemptive)": (5.25, 10.75),
-                    "SRTF (preemptive)": (5.0, 10.5), "Priority (non-preemptive)": (5.25, 10.75),
-                    "Priority (preemptive)": (5.0, 10.5), "Round Robin": (9.75, 15.25)}
+                    "SRTF (preemptive)": (5.0, 10.5), "Priority (non-preemptive)": (7.75, 13.25),
+                    "Priority (preemptive)": (9.0, 14.5), "Round Robin": (9.75, 15.25)}
         for name, (w, t) in expected.items():
             r = sch.run(name, PROCS, 2)
             self.assertEqual((r.average_waiting, r.average_turnaround), (w, t), name)
@@ -89,7 +89,12 @@ class Paging(unittest.TestCase):
 
     def test_boundary_and_errors(self):
         self.assertEqual(paging.translate(10, [(0, 3)], 0)["physical_address"], 30)
-        with self.assertRaises(ValueError): paging.translate(10, [(0, 3)], 10)  # unmapped page
+        self.assertIsNone(paging.translate(10, [(0, 3)], 10)["physical_address"])  # unmapped page = page fault
+        r = paging.translate(10, [(0, 3)], 5, 100, 50)
+        self.assertEqual((r["pages"], r["frames"], r["physical_address"]), (10, 5, 35))
+        with self.assertRaises(ValueError): paging.translate(10, [(0, 9)], 5, 100, 50)  # frame outside physical memory
+        with self.assertRaises(ValueError): paging.translate(10, [(0, 1)], 100, 100, 50)  # address outside logical memory
+        with self.assertRaises(ValueError): paging.translate(60, [(0, 1)], 5, 100, 50)  # page size exceeds physical memory
         with self.assertRaises(ValueError): paging.translate(0, [(0, 3)], 1)
         with self.assertRaises(ValueError): paging.translate(10, [(0, 3)], -1)
         with self.assertRaises(ValueError): paging.translate(10, [(0, 3), (0, 4)], 1)
@@ -102,6 +107,10 @@ class PageReplacement(unittest.TestCase):
         for algo, faults in (("FIFO", 15), ("LRU", 12), ("Optimal", 9)):
             r = pr.simulate(self.REF, 3, algo)
             self.assertEqual((r.faults, r.hits), (faults, 20 - faults), algo)
+
+    def test_optimal_takes_first_unused_frame(self):
+        r = pr.simulate([1, 2, 3, 4], 3, "Optimal")  # 1, 2, 3 never used again: frame 1 is replaced
+        self.assertEqual(r.steps[-1].frames, (4, 2, 3))
 
     def test_belady(self):
         ref = [1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5]
@@ -134,6 +143,13 @@ class Segmentation(unittest.TestCase):
         with self.assertRaises(ValueError): seg.translate([], 0, 0)
         with self.assertRaises(ValueError): seg.translate([(0, 0, 0)], 0, 0)
 
+    def test_ram_and_overlap(self):
+        r = seg.translate(self.T, 1, 99, 8000)
+        self.assertEqual(r["memory_map"], ((0, 1000, "Free"), (1000, 1400, "Segment 0"), (1400, 6000, "Free"),
+                                           (6000, 6100, "Segment 1"), (6100, 8000, "Free")))
+        with self.assertRaises(ValueError): seg.translate(self.T, 1, 99, 6050)  # segment 1 does not fit
+        with self.assertRaises(ValueError): seg.translate([(0, 0, 100), (1, 50, 100)], 0, 0)  # overlap
+
     def test_large(self):
         t = [(i, i * 100, 100) for i in range(5000)]
         self.assertEqual(seg.translate(t, 4999, 99)["physical_address"], 499999)
@@ -153,6 +169,11 @@ class Fragmentation(unittest.TestCase):
         w, r = self.where("Worst fit")
         self.assertEqual(w, {"P1": 5, "P2": 2, "P3": 5})
         self.assertEqual(r.unallocated, ("P4",))
+
+    def test_next_fit_resumes_in_leftover(self):
+        r = frag.allocate([500, 200], [("A", 100), ("B", 100)], "Variable partitions", "Next fit")
+        self.assertEqual([a.block_index for a in r.allocations], [1, 1])
+        self.assertEqual(r.memory_map, ((0, 100, "A"), (100, 100, "B"), (200, 300, "Free"), (500, 200, "Free")))
 
     def test_fixed_internal(self):
         r = frag.allocate([100, 500], [("A", 60), ("B", 450)], "Fixed partitions", "First fit")
