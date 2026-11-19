@@ -259,8 +259,8 @@ def _preview_disk(data: dict[str, str]) -> str:
 
 
 def _preview_multiprogramming(data: dict[str, str]) -> str:
-    return _echo("PROGRAMS", _RUN, ["Program", "Arrival", "CPU burst", "Memory MB", "State", "Completion", "Waiting"],
-                 _rows(data["programs"], "Programs"), 3)
+    return _echo("JOB QUEUE", "Press Run simulation to see each arrival and completion.",
+                 ["Job", "Arrival", "Burst"], _rows(data["programs"], "Jobs"))
 
 
 def _run_banker(data: dict[str, str]) -> str:
@@ -345,34 +345,28 @@ def _run_disk(data: dict[str, str]) -> str:
             + f"\nHead path: {legs}\n\nMovement: {movements} = {result.total_movement} cylinders")
 
 
+def _num(x: float) -> str:
+    return f"{x:.2f}".rstrip("0").rstrip(".")
+
+
 def _run_multiprogramming(data: dict[str, str]) -> str:
-    rows = _rows(data["programs"], "Programs", 4)
-    parsed_rows = []
-    has_units = False
-    for row in rows:
+    jobs, has_units = [], False
+    for row in _rows(data["programs"], "Programs", 3):
         arrival, arrival_unit = _time_value(row[1], f"Arrival time for {row[0]}")
-        burst, burst_unit = _time_value(row[2], f"CPU burst for {row[0]}")
+        burst, burst_unit = _time_value(row[2], f"Burst time for {row[0]}")
         has_units |= arrival_unit or burst_unit
-        parsed_rows.append((row[0], arrival, burst, _int(row[3], "Memory requirement")))
-    quantum, quantum_unit = _time_value(data["quantum"], "Time quantum")
-    has_units |= quantum_unit
-    programs = [multiprogramming.Program(*row) for row in parsed_rows]
-    result = multiprogramming.simulate(programs, _int(data["memory"], "Memory capacity"), quantum)
-    rows = [[p.pid, p.arrival, p.cpu_burst, p.memory_mb] for p in programs]
-    states = [[p.pid, p.state, p.memory_mb, p.completion if p.completion is not None else "—",
-               p.waiting if p.waiting is not None else "—"] for p in result.summaries]
-    timeline = "  ".join(f"{start}–{end}: {pid}" for start, end, pid in result.timeline)
-    return ("ROUND-ROBIN MULTIPROGRAMMING SIMULATION\n"
-            + f"Time unit: {_time_label(has_units)}.\n\nINPUT PROGRAMS\n"
-            + _format_table(["Program", "Arrival", "CPU burst", "Memory MB"], rows)
-            + "\n\nFINAL STATUS\n"
-            + _format_table(["Program", "State", "Memory MB", "Completion", "Waiting"], states)
-            + f"\n\nCPU timeline: {timeline}"
-            + f"\nPeak memory use: {result.memory_utilization_peak:.1f}% of {data['memory']} MB"
-            + f"\nCPU utilization: {result.cpu_utilization:.1f}%"
-            + f"\nThroughput: {result.throughput:.3f} completed programs per time unit"
-            + f"\nContext switches: {result.context_switches}"
-            + f"\nElapsed time: {result.elapsed}")
+        jobs.append(multiprogramming.Job(row[0], arrival, burst))
+    events = multiprogramming.simulate(jobs)
+    rows = []
+    for e in events:
+        n = len(e.active)
+        rows.append([_num(e.time), e.event, n, f"{_num(100 / n)}%" if n else "0%", f"1 / {n}" if n else "0",
+                     ", ".join(p for p, _ in e.active) or "—",
+                     ", ".join(f"{p}: {_num(r)}" for p, r in e.active) or "—"])
+    return ("EQUAL-SHARE CPU SIMULATION\n"
+            + f"Every active job receives an equal share of one CPU. Time unit: {_time_label(has_units)}.\n\n"
+            + _format_table(["Time", "Event", "Active", "CPU share each", "Hardware share", "Jobs sharing", "Remaining"], rows)
+            + f"\n\n{len(jobs)} jobs · finished at time {_num(events[-1].time)}")
 
 
 MODULES: dict[str, ModuleSpec] = {
@@ -469,12 +463,11 @@ MODULES: dict[str, ModuleSpec] = {
     ),
     "Multiprogramming": ModuleSpec(
         "Multiprogramming",
-        "Share CPU time and memory. Suffix times with hr/s or min/s; bare values mean minutes when units are used.",
+        "Equal-share CPU: every active job gets 1/n of the processor. Times accept 1 hr/s or 30 min/s.",
         (
-            FieldSpec("memory", "Available memory (MB)", "1024"),
-            FieldSpec("quantum", "CPU time slice", "2"),
-            FieldSpec("programs", "Programs", "A,0,5,400\nB,1,3,300\nC,2,4,500\nD,3,2,256", True, 8,
-                      help="One per line: ID, arrival, CPU burst, memory (MB). Example times: 1 hr/s, 30 min/s.", columns=("Program", "Arrival time", "CPU burst", "Memory (MB)"), add_label="+ Add Program", auto_id="P"),
+            FieldSpec("programs", "Jobs", "A,0,5\nB,1,3\nC,2,4\nD,3,2", True, 8,
+                      help="Press + Add Job, then type each job's arrival and burst time.",
+                      columns=("Job", "Arrival time", "Burst time"), add_label="+ Add Job", auto_id="P"),
         ),
         _run_multiprogramming, preview=_preview_multiprogramming,
     ),

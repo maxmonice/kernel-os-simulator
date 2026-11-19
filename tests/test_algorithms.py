@@ -213,23 +213,26 @@ class Disk(unittest.TestCase):
 
 class Multiprogramming(unittest.TestCase):
     def test_small(self):
-        progs = [mp.Program("A", 0, 4, 60), mp.Program("B", 0, 2, 60), mp.Program("C", 1, 3, 30)]
-        r = mp.simulate(progs, 100, 2)
-        self.assertTrue(all(s.state == "Completed" for s in r.summaries))
-        self.assertEqual(r.elapsed, 9)
-        self.assertEqual(r.cpu_utilization, 100.0)
-        self.assertLessEqual(r.memory_utilization_peak, 100.0)
+        ev = mp.simulate([mp.Job("A", 0, 4), mp.Job("B", 0, 2)])
+        self.assertEqual([(e.time, e.event) for e in ev],
+                         [(0, "A arrives"), (0, "B arrives"), (4, "B completes"), (6, "A completes")])
+        self.assertEqual(ev[2].active, (("A", 2.0),))
+        self.assertEqual(ev[1].active, (("A", 4.0), ("B", 2.0)))
+
+    def test_idle_gap(self):
+        ev = mp.simulate([mp.Job("A", 0, 1), mp.Job("B", 5, 2)])
+        self.assertEqual([(e.time, e.event) for e in ev],
+                         [(0, "A arrives"), (1, "A completes"), (5, "B arrives"), (7, "B completes")])
 
     def test_errors(self):
-        with self.assertRaises(ValueError): mp.simulate([], 100)
-        with self.assertRaises(ValueError): mp.simulate([mp.Program("A", 0, 1, 200)], 100)
-        with self.assertRaises(ValueError): mp.simulate([mp.Program("A", 0, 0, 10)], 100)
+        with self.assertRaises(ValueError): mp.simulate([])
+        with self.assertRaises(ValueError): mp.simulate([mp.Job("A", 0, 0)])
+        with self.assertRaises(ValueError): mp.simulate([mp.Job("A", 0, 1), mp.Job("A", 1, 1)])
 
     def test_large(self):
-        progs = [mp.Program(str(i), random.randint(0, 500), random.randint(1, 10), random.randint(1, 50))
-                 for i in range(1000)]
-        r = mp.simulate(progs, 200, 3)
-        self.assertEqual(sum(s.state == "Completed" for s in r.summaries), 1000)
+        jobs = [mp.Job(str(i), random.randint(0, 500), random.randint(1, 10)) for i in range(1000)]
+        ev = mp.simulate(jobs)
+        self.assertEqual(sum(e.event.endswith("completes") for e in ev), 1000)
 
 
 if __name__ == "__main__":

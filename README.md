@@ -19,7 +19,7 @@ To work on the code, install [Visual Studio Code](https://code.visualstudio.com/
 - Segmentation: segment-table checks and logical-address translation
 - Fragmentation: First Fit, Best Fit, Next Fit, and Worst Fit
 - Disk Scheduling: FCFS, SSTF, SCAN (Elevator), C-SCAN, LOOK, and C-LOOK
-- Multiprogramming: time-sliced CPU sharing and memory admission
+- Multiprogramming: equal-share CPU sharing among active jobs
 
 The CPU scheduling page shows a time-scaled Gantt chart with individual process blocks and boundary times in the simulation output. CPU Scheduling and Multiprogramming accept times such as `2 hr/s` or `30 min/s`; when a suffix is used, bare time values are interpreted as minutes.
 
@@ -73,8 +73,8 @@ Sample: `98,183,37,122,14,124,65,67`, head 53, 0-199 → FCFS 640, SSTF 236, SCA
 ![C-LOOK](docs/disk-scheduling-clook.png)
 
 ### 8. Multiprogramming
-**Input:** memory capacity, time slice, programs (`ID,arrival,burst,memory`). **Process:** a program is admitted when enough memory is free, admitted programs share the CPU round-robin, memory is released on completion. **Output:** final status, CPU timeline, peak memory, CPU utilization, throughput and context switches.
-Sample: memory 100, programs `A,0,4,60 / B,0,2,60 / C,1,3,30` → B waits for memory until A finishes.
+**Input:** jobs (`ID,arrival,burst`). **Process:** every active job receives an equal 1/n share of one CPU; the simulation advances from event to event (arrival or completion). **Output:** an event log with the active count, CPU share, hardware share, sharing jobs and each job's remaining work.
+Sample: `A,0,4 / B,0,2` → B completes at 4, A at 6.
 ![Multiprogramming](docs/multiprogramming.png)
 
 ## Testing
