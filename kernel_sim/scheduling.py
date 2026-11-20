@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from fractions import Fraction
 from typing import Callable
 
 from .models import Process, ScheduleResult, ScheduleRow, Segment
@@ -34,37 +34,37 @@ def _merge(segments: list[Segment]) -> tuple[Segment, ...]:
     return tuple(merged)
 
 
+def _n(x) -> int | float:
+    """Exact time -> int when whole, else a float rounded to 6 places (for display)."""
+    x = Fraction(x)
+    return int(x) if x.denominator == 1 else round(float(x), 6)
+
+
 def _result(processes: list[Process], algorithm: str, timeline: list[Segment]) -> ScheduleResult:
-    completion: dict[str, int] = {}
-    first_start: dict[str, int] = {}
+    # Times may be ints or Fractions (decimal input), so sums stay exact until the final conversion.
+    completion: dict[str, object] = {}
+    first_start: dict[str, object] = {}
     for segment in timeline:
         if segment.pid is not None:
             completion[segment.pid] = segment.end
             first_start.setdefault(segment.pid, segment.start)
-    rows = tuple(
-        ScheduleRow(
-            p.pid,
-            p.arrival,
-            p.burst,
-            p.priority,
-            completion[p.pid],
-            completion[p.pid] - p.arrival,
-            completion[p.pid] - p.arrival - p.burst,
-            first_start[p.pid] - p.arrival,
-        )
-        for p in processes
-    )
+    stats = [(p, completion[p.pid], completion[p.pid] - p.arrival, completion[p.pid] - p.arrival - p.burst,
+              first_start[p.pid] - p.arrival) for p in processes]  # (process, CT, TAT, WT, RT)
+    rows = tuple(ScheduleRow(p.pid, _n(p.arrival), _n(p.burst), p.priority, _n(c), _n(t), _n(w), _n(r))
+                 for p, c, t, w, r in stats)
+
+    def average(column: int) -> float:
+        return float(Fraction(sum(row[column] for row in stats)) / len(stats))
+
     makespan = max((s.end for s in timeline), default=0)
     busy = sum(s.end - s.start for s in timeline if s.pid is not None)
     return ScheduleResult(
         algorithm,
         rows,
-        _merge(timeline),
-        sum(r.waiting for r in rows) / len(rows),
-        sum(r.turnaround for r in rows) / len(rows),
-        sum(r.response for r in rows) / len(rows),
-        makespan,
-        100.0 * busy / makespan if makespan else 0.0,
+        tuple(Segment(_n(s.start), _n(s.end), s.pid) for s in _merge(timeline)),
+        average(3), average(2), average(4),
+        _n(makespan),
+        float(100 * Fraction(busy) / Fraction(makespan)) if makespan else 0.0,
     )
 
 
@@ -102,9 +102,8 @@ def sjf_non_preemptive(processes: list[Process]) -> ScheduleResult:
     return _result(processes, "Shortest Job First (non-preemptive)", _non_preemptive(processes, lambda p: (p.burst, p.arrival)))
 
 
-def shortest_remaining_time_first(processes: list[Process]) -> ScheduleResult:
-    """Preemptive SJF: run the ready process with the least remaining CPU time."""
-    _validate(processes)
+def _preemptive(processes: list[Process], key: Callable[[Process, dict], tuple]) -> list[Segment]:
+    """Run the best-ranked ready process until it finishes or the next arrival, then choose again."""
     remaining = {p.pid: p.burst for p in processes}
     order = {p.pid: i for i, p in enumerate(processes)}
     timeline: list[Segment] = []
@@ -116,11 +115,20 @@ def shortest_remaining_time_first(processes: list[Process]) -> ScheduleResult:
             timeline.append(Segment(time, next_time, None))
             time = next_time
             continue
-        current = min(ready, key=lambda p: (remaining[p.pid], p.arrival, order[p.pid]))
-        timeline.append(Segment(time, time + 1, current.pid))
-        remaining[current.pid] -= 1
-        time += 1
-    return _result(processes, "Shortest Remaining Time First (SRTF; preemptive)", timeline)
+        current = min(ready, key=lambda p: (*key(p, remaining), order[p.pid]))
+        later = [p.arrival for p in processes if p.arrival > time]
+        step = min(remaining[current.pid], min(later) - time) if later else remaining[current.pid]
+        timeline.append(Segment(time, time + step, current.pid))
+        remaining[current.pid] -= step
+        time += step
+    return timeline
+
+
+def shortest_remaining_time_first(processes: list[Process]) -> ScheduleResult:
+    """Preemptive SJF: run the ready process with the least remaining CPU time."""
+    _validate(processes)
+    return _result(processes, "Shortest Remaining Time First (SRTF; preemptive)",
+                   _preemptive(processes, lambda p, remaining: (remaining[p.pid], p.arrival)))
 
 
 def priority_non_preemptive(processes: list[Process]) -> ScheduleResult:
@@ -130,22 +138,8 @@ def priority_non_preemptive(processes: list[Process]) -> ScheduleResult:
 
 def priority_preemptive(processes: list[Process]) -> ScheduleResult:
     _validate(processes)
-    remaining = {p.pid: p.burst for p in processes}
-    order = {p.pid: i for i, p in enumerate(processes)}
-    time = 0
-    timeline: list[Segment] = []
-    while any(value > 0 for value in remaining.values()):
-        ready = [p for p in processes if p.arrival <= time and remaining[p.pid] > 0]
-        if not ready:
-            next_time = min(p.arrival for p in processes if remaining[p.pid] > 0)
-            timeline.append(Segment(time, next_time, None))
-            time = next_time
-            continue
-        current = min(ready, key=lambda p: (-p.priority, p.arrival, order[p.pid]))
-        timeline.append(Segment(time, time + 1, current.pid))
-        remaining[current.pid] -= 1
-        time += 1
-    return _result(processes, "Priority (preemptive; higher value is higher)", timeline)
+    return _result(processes, "Priority (preemptive; higher value is higher)",
+                   _preemptive(processes, lambda p, remaining: (-p.priority, p.arrival)))
 
 
 def round_robin(processes: list[Process], quantum: int) -> ScheduleResult:
@@ -177,7 +171,7 @@ def round_robin(processes: list[Process], quantum: int) -> ScheduleResult:
         time = end
         if remaining[process.pid] > 0:
             ready.append(process)
-    return _result(processes, f"Round Robin (quantum = {quantum})", timeline)
+    return _result(processes, f"Round Robin (quantum = {_n(quantum)})", timeline)
 
 
 def run(algorithm: str, processes: list[Process], quantum: int = 2) -> ScheduleResult:

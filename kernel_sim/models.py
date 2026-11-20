@@ -8,8 +8,8 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Process:
     pid: str
-    arrival: int
-    burst: int
+    arrival: float  # int, float or Fraction (the GUI passes exact Fractions for decimal input)
+    burst: float
     priority: int = 0
 
 

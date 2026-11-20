@@ -5,17 +5,19 @@ from __future__ import annotations
 import csv
 import html
 import io
+import math
 import re
 import sys
 import tempfile
 from collections import namedtuple
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from string import Template
 from typing import Callable
 
 from PySide6.QtCore import Property, QEasingCurve, Signal, QPointF, QPropertyAnimation, QRectF, QEvent, QSize, Qt, QVariantAnimation
-from PySide6.QtGui import (QColor, QFont, QFontMetrics, QFontDatabase, QKeySequence, QLinearGradient, QPainter, QPen,
+from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetrics, QFontDatabase, QKeySequence, QLinearGradient, QPainter, QPen,
                            QPixmap, QShortcut, QTextCharFormat, QTextCursor)
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFrame, QGraphicsBlurEffect, QGraphicsOpacityEffect,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPlainTextEdit,
@@ -59,6 +61,7 @@ class ModuleSpec:
     gantt: Callable[[dict[str, str]], tuple] | None = None  # -> (intervals, pids, makespan, axis label)
     preview: Callable[[dict[str, str]], str] | None = None  # live output while the inputs are edited
     head_chart: Callable[[dict[str, str]], tuple] | None = None  # -> (head path, low cylinder, high cylinder)
+    memory_chart: Callable[[dict[str, str]], tuple] | None = None  # -> (runs per strategy, process colours, chosen strategy)
 
 
 def _int(value: str, label: str) -> int:
@@ -69,24 +72,21 @@ def _int(value: str, label: str) -> int:
 
 
 _TIME_VALUE = re.compile(
-    r"^\s*(\d+(?:\.\d+)?)\s*(hr/s|hrs?/s|hours?|hrs?|min/s|mins?/s|minutes?|mins?)?\s*$",
+    r"^\s*(\d+(?:\.\d+)?|\.\d+)\s*(hr/s|hrs?/s|hours?|hrs?|min/s|mins?/s|minutes?|mins?)?\s*$",
     re.IGNORECASE,
 )
 
 
-def _time_value(value: str, label: str) -> tuple[int, bool]:
-    """Parse a time as minutes when it has an hr/min suffix; bare values stay unitless."""
+def _time_value(value: str, label: str) -> tuple[Fraction, bool]:
+    """Parse a time (decimals allowed, exact) as minutes when it has an hr/min suffix; bare values stay unitless."""
     match = _TIME_VALUE.fullmatch(value)
     if not match:
-        raise ValueError(f"{label} must be a number, optionally followed by hr/s or min/s (for example, 2 hr/s or 30 min/s).")
-    number = float(match.group(1))
+        raise ValueError(f"{label} must be a number (decimals allowed, like 0.5), optionally followed by hr/s or min/s (for example, 2 hr/s or 30 min/s).")
+    number = Fraction(match.group(1))  # exact: 0.1 stays 1/10, so no floating-point drift
     unit = (match.group(2) or "").lower()
-    explicit = bool(unit)
     if unit.startswith("hr") or unit.startswith("hour"):
         number *= 60
-    if not number.is_integer():
-        raise ValueError(f"{label} must resolve to a whole number of minutes.")
-    return int(number), explicit
+    return number, bool(unit)
 
 
 def _time_label(has_units: bool) -> str:
@@ -302,16 +302,39 @@ def _run_paging(data: dict[str, str]) -> str:
             f"                 = {r['physical_address']}")
 
 
+def _reference_flags(text: str) -> tuple[int, bool]:
+    """'7' is a read of page 7; '7W' is a write to page 7."""
+    token = text.strip()
+    write = token[-1:] in ("W", "w")
+    return _int(token[:-1] if write else token, "Page reference"), write
+
+
 def _run_page_replacement(data: dict[str, str]) -> str:
-    refs = [_int(x, "Page reference") for x in data["references"].replace("\n", ",").split(",") if x.strip()]
-    result = page_replacement.simulate(refs, _int(data["frames"], "Frame count"), data["algorithm"])
-    headers = ["Step", "Reference", *[f"Frame {i + 1}" for i in range(_int(data["frames"], "Frame count"))], "Result", "Replaced"]
-    rows = [[s.index, s.page, *["—" if f is None else f for f in s.frames], s.result,
-             "—" if s.replaced is None else s.replaced] for s in result.steps]
+    refs = [_reference_flags(x) for x in data["references"].replace("\n", ",").split(",") if x.strip()]
+    frame_count = _int(data["frames"], "Frame count")
+    result = page_replacement.simulate([page for page, _ in refs], frame_count, data["algorithm"],
+                                       [write for _, write in refs], _int(data["tick"], "Clock tick / window size"))
+    with_decision = any(s.detail for s in result.steps)
+    headers = ["Step", "Reference", *[f"Frame {i + 1}" for i in range(frame_count)], "Result", "Replaced",
+               *(["Decision"] if with_decision else [])]
+    rows = []
+    for s in result.steps:
+        cells = []
+        for k, f in enumerate(s.frames):
+            text = "—" if f is None else (f"{f} · {s.bits[k]}" if s.bits else str(f))
+            cells.append(f"▶ {text}" if s.hand == k else text)  # Clock: ▶ marks the hand
+        rows.append([s.index, f"{s.page}W" if s.write else s.page, *cells, s.result,
+                     "—" if s.replaced is None else s.replaced, *([s.detail or "—"] if with_decision else [])])
+    notes = {"NRU": "NRU: each frame shows R (reference bit) and M (modified bit). Class = 2R + M (0 = not referenced, not modified). A random page from the lowest non-empty class is replaced (fixed seed, so the result is repeatable).",
+             "Second Chance": "Second Chance: the oldest page is checked first. R=1: it gets another chance (R cleared, moved to the back). R=0: it is replaced.",
+             "Clock": "Clock: the frames that are candidates for replacement form a circular buffer, and ▶ marks the hand. R=1: the page gets another chance (R cleared) and the hand moves on. R=0: it is replaced and the hand moves past it.",
+             "NFU": "NFU: each frame shows R and its counter C. At every clock tick R is added to C and cleared. The lowest counter is replaced, the oldest page first on a tie.",
+             "Random": "Random: a frame is picked at random (fixed seed, so the result is repeatable).",
+             "Working Set": "Working Set: the pages a process is currently using (those used within the last N references, the window) are its working set. On a page fault a page that is not in the working set is evicted: the first such page in frame order, or the oldest page if every page is in the working set."}
     return (f"{result.algorithm} · {len(result.steps)} references\n\n"
             + _format_table(headers, rows)
             + f"\n\nHits: {result.hits}    Page faults: {result.faults}    Hit ratio: {result.hits / len(result.steps):.1%}"
-            f"    Fault rate: {result.fault_rate:.1%}")
+            f"    Fault rate: {result.fault_rate:.1%}" + ("\n" + notes[result.algorithm] if result.algorithm in notes else ""))
 
 
 def _run_segmentation(data: dict[str, str]) -> str:
@@ -327,24 +350,37 @@ def _run_segmentation(data: dict[str, str]) -> str:
             f"\n\nPHYSICAL MEMORY MAP\n{layout}")
 
 
-def _run_fragmentation(data: dict[str, str]) -> str:
+def _frag_inputs(data: dict[str, str]) -> tuple[list[int], list[tuple[str, int]]]:
     blocks = [_int(x, "Block size") for x in data["blocks"].replace("\n", ",").split(",") if x.strip()]
     processes = [(row[0], _int(row[1], "Process size")) for row in _rows(data["processes"], "Processes", 2)]
-    result = fragmentation.allocate(blocks, processes, data["mode"], data["strategy"])
-    rows = [[a.process_id, a.process_size, a.block_index, a.block_size,
-             a.internal_waste if result.mode == "Fixed partitions" else 0] for a in result.allocations]
-    lines = [f"{result.mode} · {result.strategy}", "",
-             _format_table(["Process", "Requested", "Block", "Block size", "Internal waste"], rows)]
-    lines.extend(["", "MEMORY MAP", _format_table(["Block", "Base", "Size", "Allocation"],
-                                                  [[i, base, size, label] for i, (base, size, label) in enumerate(result.memory_map)]), ""])
-    lines.append("Unallocated: " + (", ".join(result.unallocated) if result.unallocated else "none"))
-    if result.mode == "Fixed partitions":
-        lines.append(f"Total internal fragmentation: {result.internal_fragmentation}")
-    else:
-        lines.extend([f"Remaining free holes: {_vector(result.free_blocks)}",
-                      f"Total free memory: {result.total_free}", f"Largest contiguous hole: {result.largest_hole}",
-                      f"External fragmentation (free space outside largest hole): {result.external_fragmentation}"])
-    return "\n".join(lines)
+    return blocks, processes
+
+
+def _memory_chart_fragmentation(data: dict[str, str]) -> tuple:
+    """The same input placed by every strategy, so the columns can be compared side by side."""
+    blocks, processes = _frag_inputs(data)
+    runs = [fragmentation.allocate(blocks, processes, strategy)
+            for strategy in ("First fit", "Best fit", "Next fit", "Worst fit")]
+    colors = {pid: PROCESS_COLORS[i % len(PROCESS_COLORS)] for i, (pid, _) in enumerate(processes)}
+    return runs, colors, data["strategy"]
+
+
+def _run_fragmentation(data: dict[str, str]) -> str:
+    blocks, processes = _frag_inputs(data)
+    result = fragmentation.allocate(blocks, processes, data["strategy"])
+    rows = [[a.process_id, a.process_size, a.block_index, a.block_size, a.internal_waste] for a in result.allocations]
+    layout = [[i, base, size, pid or "Empty"] for i, (base, size, pid) in enumerate(result.memory_map, 1)]
+    return "\n".join([
+        f"{result.strategy} · one process per block", "",
+        _format_table(["Process", "Requested", "Block", "Block size", "Internal waste"], rows),
+        "", "MEMORY MAP", _format_table(["Block", "Base", "Size", "Allocation"], layout), "",
+        "Unallocated: " + (", ".join(result.unallocated) if result.unallocated else "none"),
+        f"Total internal fragmentation (unused space inside filled blocks): {result.internal_fragmentation}",
+        f"Empty blocks: {_vector(result.free_blocks)}",
+        f"Total empty memory: {result.total_free}",
+        f"Largest empty block: {result.largest_hole}",
+        f"External fragmentation (empty memory while a process could not be placed): {result.external_fragmentation}",
+    ])
 
 
 def _disk_result(data: dict[str, str]):
@@ -379,7 +415,7 @@ def _run_multiprogramming(data: dict[str, str]) -> str:
         arrival, arrival_unit = _time_value(row[1], f"Arrival time for {row[0]}")
         burst, burst_unit = _time_value(row[2], f"Burst time for {row[0]}")
         has_units |= arrival_unit or burst_unit
-        jobs.append(multiprogramming.Job(row[0], arrival, burst))
+        jobs.append(multiprogramming.Job(row[0], float(arrival), float(burst)))
     events = multiprogramming.simulate(jobs)
     rows = []
     for e in events:
@@ -396,7 +432,7 @@ def _run_multiprogramming(data: dict[str, str]) -> str:
 MODULES: dict[str, ModuleSpec] = {
     "CPU Scheduling": ModuleSpec(
         "CPU Scheduling",
-        "Use plain numbers or suffix times with hr/s or min/s. Bare values mean minutes when any suffix is used.",
+        "Times accept decimals (0.5) or hr/s and min/s suffixes. Bare values mean minutes when any suffix is used.",
         (
             FieldSpec("algorithm", "Algorithm", "FCFS",
                       hint="FCFS · SJF (non-preemptive) · SRTF (preemptive) · Priority (non-preemptive) · Priority (preemptive) · Round Robin"),
@@ -404,7 +440,7 @@ MODULES: dict[str, ModuleSpec] = {
             FieldSpec("processes", "Processes", "P1,0,4,2\nP2,1,2,1\nP3,2,3,3\nP4,3,5,2\nP5,4,6,1\nP6,5,1,2",
                       True, 8,
                       help="Press + Add Process, then type each row's arrival, burst and priority. "
-                           "Times accept 1 hr/s or 30 min/s.",
+                           "Times accept decimals (0.5), 1 hr/s or 30 min/s.",
                       columns=("Process", "Arrival time (AT)", "Burst time (BT)", "Priority"),
                       add_label="+ Add Process", auto_id="P"),
         ),
@@ -440,12 +476,15 @@ MODULES: dict[str, ModuleSpec] = {
     ),
     "Page Replacement": ModuleSpec(
         "Page Replacement",
-        "Follow each page reference through memory frames and compare hits with faults.",
+        "Follow each page reference through memory frames and compare hits with faults. The clock tick clears R bits for NRU and NFU; Working Set uses it as its window.",
         (
-            FieldSpec("algorithm", "Algorithm", "FIFO", hint="FIFO · LRU · Optimal"),
+            FieldSpec("algorithm", "Algorithm", "FIFO",
+                      hint="FIFO · LRU · Optimal · Second Chance · Clock · NRU · NFU · Random · Working Set"),
             FieldSpec("frames", "Number of frames", "3"),
+            FieldSpec("tick", "Clock tick / window size (references; NRU, NFU, Working Set)", "4"),
             FieldSpec("references", "Page reference string", "7,0,1,2,0,3,0,4,2,3,0,3,2", True, 7,
-                      help="Comma-separated or one page per line.", columns=("Page reference",), add_label="+ Add Reference"),
+                      help="Comma-separated or one page per line. Add W for a write (0W); NRU uses it for the modified bit.",
+                      columns=("Page reference",), add_label="+ Add Reference"),
         ),
         _run_page_replacement, preview=_preview_page_replacement,
     ),
@@ -463,16 +502,15 @@ MODULES: dict[str, ModuleSpec] = {
     ),
     "Fragmentation": ModuleSpec(
         "Fragmentation",
-        "Allocate processes into memory and inspect the space that remains unused.",
+        "Each memory block holds one process. Blocks end up filled or empty, and unused space inside a filled block is internal fragmentation.",
         (
-            FieldSpec("mode", "Partition mode", "Variable partitions", hint="Fixed partitions · Variable partitions"),
             FieldSpec("strategy", "Allocation strategy", "First fit", hint="First fit · Best fit · Next fit · Worst fit"),
             FieldSpec("blocks", "Memory blocks", "100,500,200,300,600", True, 7, help="One block size per row.",
                       columns=("Block size",), add_label="+ Add Block"),
             FieldSpec("processes", "Processes", "P1,212\nP2,417\nP3,112\nP4,426", True, 7,
                       help="One per line: ID, size.", columns=("Process", "Size"), add_label="+ Add Process", auto_id="P"),
         ),
-        _run_fragmentation, preview=_preview_fragmentation,
+        _run_fragmentation, preview=_preview_fragmentation, memory_chart=_memory_chart_fragmentation,
     ),
     "Disk Scheduling": ModuleSpec(
         "Disk Scheduling",
@@ -490,7 +528,7 @@ MODULES: dict[str, ModuleSpec] = {
     ),
     "Multiprogramming": ModuleSpec(
         "Multiprogramming",
-        "Equal-share CPU: every active job gets 1/n of the processor. Times accept 1 hr/s or 30 min/s.",
+        "Equal-share CPU: every active job gets 1/n of the processor. Times accept decimals (0.5), 1 hr/s or 30 min/s.",
         (
             FieldSpec("programs", "Jobs", "A,0,5\nB,1,3\nC,2,4\nD,3,2", True, 8,
                       help="Press + Add Job, then type each job's arrival and burst time.",
@@ -766,7 +804,7 @@ class GanttView(QWidget):
 
     def set_data(self, timeline, colors: dict[str, str], makespan: int, axis_unit: str) -> None:
         self._data = (timeline, colors, makespan, axis_unit)
-        self.setMinimumWidth(self.LEFT + max(1, makespan) * self.UNIT + self.RIGHT)
+        self.setMinimumWidth(math.ceil(self.LEFT + max(1, makespan) * self.UNIT + self.RIGHT))
         self._reveal = 0.0
         self._anim.stop()
         self._anim.setDuration(520)
@@ -893,6 +931,75 @@ class HeadChartView(QWidget):
             right = c.x() < self.LEFT + width - 40
             box = QRectF(c.x() + 8 if right else c.x() - 48, c.y() - 8, 40, 16)
             p.drawText(box, (Qt.AlignmentFlag.AlignLeft if right else Qt.AlignmentFlag.AlignRight) | Qt.AlignmentFlag.AlignVCenter, str(path[i]))
+
+
+class MemoryChartView(QWidget):
+    """Memory columns, one per allocation strategy. Each block is drawn to scale: filled with its process's
+    colour, or grey when empty. A block holds one process, so leftover space inside it is not drawn separately."""
+
+    TOP, BOTTOM, SIDE, GAP, COLUMN_MAX, MIN_BLOCK, SCALE_PX = 12, 46, 20, 24, 170, 22, 250
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._data: tuple | None = None
+        self.setMinimumHeight(self.TOP + self.SCALE_PX + self.BOTTOM)
+
+    def clear(self) -> None:
+        self._data = None
+        self.setMinimumHeight(self.TOP + self.SCALE_PX + self.BOTTOM)
+        self.update()
+
+    def _height(self, size: int, scale: float) -> float:
+        return max(self.MIN_BLOCK, size * scale)
+
+    def set_data(self, runs, colors: dict[str, str], chosen: str) -> None:
+        total = sum(size for _, size, _ in runs[0].memory_map)
+        scale = self.SCALE_PX / max(1, total)
+        tallest = max(sum(self._height(size, scale) for _, size, _ in r.memory_map) for r in runs)
+        self._data = (runs, colors, chosen, scale)
+        self.setMinimumHeight(round(self.TOP + max(self.SCALE_PX, tallest) + self.BOTTOM))
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        small = QFont(self.font())
+        small.setPixelSize(11)
+        p.setFont(small)
+        if self._data is None:
+            p.setPen(_color(MUTED))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "Run the simulation to see the memory map for every strategy.")
+            return
+        runs, colors, chosen, scale = self._data
+        n = len(runs)
+        col_w = max(70.0, min(float(self.COLUMN_MAX), (self.width() - 2 * self.SIDE - (n - 1) * self.GAP) / n))
+        x0 = (self.width() - (n * col_w + (n - 1) * self.GAP)) / 2
+        metrics = QFontMetrics(small)
+        for c, run in enumerate(runs):
+            x, y = x0 + c * (col_w + self.GAP), float(self.TOP)
+            placed = {a.process_id: a.process_size for a in run.allocations}
+            for _, size, pid in run.memory_map:
+                box = QRectF(x, y, col_w, self._height(size, scale))
+                p.setPen(QPen(_color("white", 0.40), 1.2))
+                p.setBrush(_color(colors[pid], 0.92) if pid else _color("white", 0.07))
+                p.drawRect(box)
+                if box.height() >= 15:
+                    p.setPen(QColor("white") if pid else _color(MUTED))
+                    text = f"{pid} · {placed[pid]} / {size}" if pid else f"Empty · {size}"
+                    p.drawText(box, Qt.AlignmentFlag.AlignCenter, metrics.elidedText(text, Qt.TextElideMode.ElideRight, int(col_w - 8)))
+                y += box.height()
+            title = QFont(small)
+            title.setPixelSize(12)
+            title.setWeight(QFont.Weight.DemiBold)
+            p.setFont(title)
+            p.setPen(QColor(ACCENT) if run.strategy == chosen else _color(FG, 0.9))
+            bottom = float(self.height() - self.BOTTOM + 6)
+            p.drawText(QRectF(x, bottom, col_w, 16), Qt.AlignmentFlag.AlignCenter, run.strategy)
+            p.setFont(small)
+            if run.unallocated:
+                p.setPen(QColor(RED))
+                p.drawText(QRectF(x, bottom + 16, col_w, 16), Qt.AlignmentFlag.AlignCenter,
+                           metrics.elidedText("Not placed: " + ", ".join(run.unallocated), Qt.TextElideMode.ElideRight, int(col_w)))
 
 
 _KIND_COLOR = {"error": RED, "bad": RED, "good": GREEN, "heading": BLUE}
@@ -1280,7 +1387,7 @@ class ModulePage(QWidget):
         super().__init__()
         self.spec = spec
         self.widgets: dict[str, QWidget] = {}
-        self.gantt: GanttView | HeadChartView | None = None
+        self.gantt: GanttView | HeadChartView | MemoryChartView | None = None
         self._build()
 
     def _build(self) -> None:
@@ -1370,6 +1477,21 @@ class ModulePage(QWidget):
             strip.setWidgetResizable(True)
             strip.setFixedHeight(self.gantt.height() + 14)
             strip.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            box.addWidget(strip)
+            col.addSpacing(12)
+            col.addWidget(chart)
+        elif self.spec.memory_chart:
+            chart = Panel()
+            box = QVBoxLayout(chart)
+            box.setContentsMargins(20, 14, 20, 14)
+            box.setSpacing(6)
+            box.addWidget(_label("Memory map · every strategy on the same input", "section"))
+            self.gantt = MemoryChartView()  # same slot as the other charts: cleared and redrawn with each run
+            strip = QScrollArea()
+            strip.setWidget(self.gantt)
+            strip.setWidgetResizable(True)
+            strip.setFixedHeight(330)
+            strip.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             box.addWidget(strip)
             col.addSpacing(12)
             col.addWidget(chart)
@@ -1493,6 +1615,9 @@ class ModulePage(QWidget):
 
     def _draw_gantt(self, data: dict[str, str]) -> None:  # Gantt chart, or the head chart on the disk page
         assert self.gantt is not None
+        if self.spec.memory_chart:
+            self.gantt.set_data(*self.spec.memory_chart(data))
+            return
         if self.spec.head_chart:
             self.gantt.set_data(*self.spec.head_chart(data))
             return

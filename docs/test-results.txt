@@ -1,37 +1,1002 @@
-test_errors (test_algorithms.Banker.test_errors) ... ok
-test_large (test_algorithms.Banker.test_large) ... ok
-test_request (test_algorithms.Banker.test_request) ... ok
-test_safe (test_algorithms.Banker.test_safe) ... ok
-test_unsafe (test_algorithms.Banker.test_unsafe) ... ok
-test_elevator_is_scan (test_algorithms.Disk.test_elevator_is_scan) ... ok
-test_errors (test_algorithms.Disk.test_errors) ... ok
-test_known_movement (test_algorithms.Disk.test_known_movement) ... ok
-test_large (test_algorithms.Disk.test_large) ... ok
-test_lecture_slide_example (test_algorithms.Disk.test_lecture_slide_example) ... ok
-test_sstf_order (test_algorithms.Disk.test_sstf_order) ... ok
-test_errors (test_algorithms.Fragmentation.test_errors) ... ok
-test_external (test_algorithms.Fragmentation.test_external) ... ok
-test_fixed_internal (test_algorithms.Fragmentation.test_fixed_internal) ... ok
-test_large (test_algorithms.Fragmentation.test_large) ... ok
-test_textbook (test_algorithms.Fragmentation.test_textbook) ... ok
-test_errors (test_algorithms.Multiprogramming.test_errors) ... ok
-test_large (test_algorithms.Multiprogramming.test_large) ... ok
-test_small (test_algorithms.Multiprogramming.test_small) ... ok
-test_belady (test_algorithms.PageReplacement.test_belady) ... ok
-test_edges (test_algorithms.PageReplacement.test_edges) ... ok
-test_known_faults (test_algorithms.PageReplacement.test_known_faults) ... ok
-test_large (test_algorithms.PageReplacement.test_large) ... ok
-test_boundary_and_errors (test_algorithms.Paging.test_boundary_and_errors) ... ok
-test_translate (test_algorithms.Paging.test_translate) ... ok
-test_errors (test_algorithms.Scheduling.test_errors) ... ok
-test_idle_gap (test_algorithms.Scheduling.test_idle_gap) ... ok
-test_known_averages (test_algorithms.Scheduling.test_known_averages) ... ok
-test_large (test_algorithms.Scheduling.test_large) ... ok
-test_large (test_algorithms.Segmentation.test_large) ... ok
-test_out_of_range (test_algorithms.Segmentation.test_out_of_range) ... ok
-test_valid (test_algorithms.Segmentation.test_valid) ... ok
 
-----------------------------------------------------------------------
-Ran 32 tests in 1.069s
+==============================================================================
+BANKER
+==============================================================================
 
-OK
+  [test_errors]
+    no processes
+      Input    : empty lists
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Enter at least one process.
+      Result   : CORRECT
+    maximum below allocation
+      Input    : Allocation [[2]], Max [[1]], total [5]
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Maximum demand for A cannot be below its allocation.
+      Result   : CORRECT
+    allocation above total
+      Input    : Allocation [[9]], Max [[9]], total [5]
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Allocated resources cannot exceed the total instances available.
+      Result   : CORRECT
+
+  [test_large]
+    large run
+      Input    : 300 processes, 8 resource types, each needs 1 of each, total 1 of each
+      Expected : safe, 300 in sequence
+      Actual   : safe, 300 in sequence
+      Result   : CORRECT
+
+  [test_request]
+    P1 requests [1,0,2]: granted?
+      Input    : 5 processes, total [10,5,7], Allocation [[0,1,0],[2,0,0],[3,0,2],[2,1,1],[0,0,2]],
+                  Max [[7,5,3],[3,2,2],[9,0,2],[2,2,2],[4,3,3]]
+      Expected : True
+      Actual   : True
+      Result   : CORRECT
+    P4 requests [3,3,0] (more than Available): granted?
+      Input    : 5 processes, total [10,5,7], Allocation [[0,1,0],[2,0,0],[3,0,2],[2,1,1],[0,0,2]],
+                  Max [[7,5,3],[3,2,2],[9,0,2],[2,2,2],[4,3,3]]
+      Expected : False
+      Actual   : False
+      Result   : CORRECT
+
+  [test_safe]
+    safe state
+      Input    : 5 processes, total [10,5,7], Allocation [[0,1,0],[2,0,0],[3,0,2],[2,1,1],[0,0,2]],
+                  Max [[7,5,3],[3,2,2],[9,0,2],[2,2,2],[4,3,3]]
+      Expected : True
+      Actual   : True
+      Result   : CORRECT
+    Available = Total - sum(Allocation)
+      Input    : 5 processes, total [10,5,7], Allocation [[0,1,0],[2,0,0],[3,0,2],[2,1,1],[0,0,2]],
+                  Max [[7,5,3],[3,2,2],[9,0,2],[2,2,2],[4,3,3]]
+      Expected : (3, 3, 2)
+      Actual   : (3, 3, 2)
+      Result   : CORRECT
+    Need of P0 = Max - Allocation
+      Input    : 5 processes, total [10,5,7], Allocation [[0,1,0],[2,0,0],[3,0,2],[2,1,1],[0,0,2]],
+                  Max [[7,5,3],[3,2,2],[9,0,2],[2,2,2],[4,3,3]]
+      Expected : (7, 4, 3)
+      Actual   : (7, 4, 3)
+      Result   : CORRECT
+    safe sequence
+      Input    : 5 processes, total [10,5,7], Allocation [[0,1,0],[2,0,0],[3,0,2],[2,1,1],[0,0,2]],
+                  Max [[7,5,3],[3,2,2],[9,0,2],[2,2,2],[4,3,3]]
+      Expected : ('1', '3', '4', '0', '2')
+      Actual   : ('1', '3', '4', '0', '2')
+      Result   : CORRECT
+
+  [test_unsafe]
+    safe state?
+      Input    : 2 processes, total [2], Allocation [[1],[1]], Max [[3],[3]] (each needs 2 more,
+                  none available)
+      Expected : False
+      Actual   : False
+      Result   : CORRECT
+    safe sequence
+      Input    : 2 processes, total [2], Allocation [[1],[1]], Max [[3],[3]] (each needs 2 more,
+                  none available)
+      Expected : ()
+      Actual   : ()
+      Result   : CORRECT
+
+==============================================================================
+DISK
+==============================================================================
+
+  [test_elevator_is_scan]
+    SCAN (Elevator) gives the same order and movement as SCAN
+      Input    : requests 98,183,37,122,14,124,65,67; head 53; cylinders 0-199; direction right
+      Expected : ((65, 67, 98, 122, 124, 183, 37, 14), 331)
+      Actual   : ((65, 67, 98, 122, 124, 183, 37, 14), 331)
+      Result   : CORRECT
+    result keeps the Elevator label
+      Input    : requests 98,183,37,122,14,124,65,67; head 53; cylinders 0-199; direction right
+      Expected : SCAN (Elevator)
+      Actual   : SCAN (Elevator)
+      Result   : CORRECT
+
+  [test_errors]
+    no requests
+      Input    : empty list
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Enter at least one disk request.
+      Result   : CORRECT
+    request outside cylinder range
+      Input    : request 300, range 0-199
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Request 300 is outside the configured cylinder range 0–199.
+      Result   : CORRECT
+    head outside cylinder range
+      Input    : head 250, range 0-199
+      Expected : ValueError (input refused)
+      Actual   : ValueError: The starting head position must be within the cylinder range.
+      Result   : CORRECT
+    unknown algorithm
+      Input    : algorithm XYZ
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Choose one of: C-LOOK, C-SCAN, FCFS, LOOK, SCAN, SSTF.
+      Result   : CORRECT
+    lower limit equals upper limit
+      Input    : range 10-10
+      Expected : ValueError (input refused)
+      Actual   : ValueError: The upper cylinder must be greater than the lower cylinder.
+      Result   : CORRECT
+
+  [test_known_movement]
+    FCFS: total head movement
+      Input    : requests 98,183,37,122,14,124,65,67; head 53; cylinders 0-199; direction right
+      Expected : 640
+      Actual   : 640
+      Result   : CORRECT
+    SSTF: total head movement
+      Input    : requests 98,183,37,122,14,124,65,67; head 53; cylinders 0-199; direction right
+      Expected : 236
+      Actual   : 236
+      Result   : CORRECT
+    SCAN: total head movement
+      Input    : requests 98,183,37,122,14,124,65,67; head 53; cylinders 0-199; direction right
+      Expected : 331
+      Actual   : 331
+      Result   : CORRECT
+    C-SCAN: total head movement
+      Input    : requests 98,183,37,122,14,124,65,67; head 53; cylinders 0-199; direction right
+      Expected : 382
+      Actual   : 382
+      Result   : CORRECT
+    LOOK: total head movement
+      Input    : requests 98,183,37,122,14,124,65,67; head 53; cylinders 0-199; direction right
+      Expected : 299
+      Actual   : 299
+      Result   : CORRECT
+    C-LOOK: total head movement
+      Input    : requests 98,183,37,122,14,124,65,67; head 53; cylinders 0-199; direction right
+      Expected : 322
+      Actual   : 322
+      Result   : CORRECT
+
+  [test_large]
+    FCFS: every request served exactly once
+      Input    : 3000 random requests, head 50
+      Expected : all 3000 served
+      Actual   : all 3000 served
+      Result   : CORRECT
+    SSTF: every request served exactly once
+      Input    : 3000 random requests, head 50
+      Expected : all 3000 served
+      Actual   : all 3000 served
+      Result   : CORRECT
+    SCAN: every request served exactly once
+      Input    : 3000 random requests, head 50
+      Expected : all 3000 served
+      Actual   : all 3000 served
+      Result   : CORRECT
+    C-SCAN: every request served exactly once
+      Input    : 3000 random requests, head 50
+      Expected : all 3000 served
+      Actual   : all 3000 served
+      Result   : CORRECT
+    LOOK: every request served exactly once
+      Input    : 3000 random requests, head 50
+      Expected : all 3000 served
+      Actual   : all 3000 served
+      Result   : CORRECT
+    C-LOOK: every request served exactly once
+      Input    : 3000 random requests, head 50
+      Expected : all 3000 served
+      Actual   : all 3000 served
+      Result   : CORRECT
+
+  [test_lecture_slide_example]
+    FCFS: total head movement (lecture slide 21)
+      Input    : requests 55,58,39,18,90,160,150,38,184; head 100; moving up
+      Expected : 498
+      Actual   : 498
+      Result   : CORRECT
+    SSTF: total head movement (lecture slide 21)
+      Input    : requests 55,58,39,18,90,160,150,38,184; head 100; moving up
+      Expected : 248
+      Actual   : 248
+      Result   : CORRECT
+    LOOK: total head movement (lecture slide 21)
+      Input    : requests 55,58,39,18,90,160,150,38,184; head 100; moving up
+      Expected : 250
+      Actual   : 250
+      Result   : CORRECT
+    C-LOOK: total head movement (lecture slide 21)
+      Input    : requests 55,58,39,18,90,160,150,38,184; head 100; moving up
+      Expected : 322
+      Actual   : 322
+      Result   : CORRECT
+
+  [test_sstf_order]
+    SSTF: service order
+      Input    : requests 98,183,37,122,14,124,65,67; head 53; cylinders 0-199; direction right
+      Expected : (65, 67, 37, 14, 98, 122, 124, 183)
+      Actual   : (65, 67, 37, 14, 98, 122, 124, 183)
+      Result   : CORRECT
+
+==============================================================================
+FRAGMENTATION
+==============================================================================
+
+  [test_errors]
+    no memory blocks
+      Input    : blocks: none
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Enter at least one memory block.
+      Result   : CORRECT
+    zero-size process
+      Input    : A=0
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Memory required by A must be greater than zero.
+      Result   : CORRECT
+    duplicate process IDs
+      Input    : A=1, A=1
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Process IDs must be unique and non-empty.
+      Result   : CORRECT
+    unknown strategy
+      Input    : strategy 'Random fit'
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Choose First fit, Best fit, Worst fit, or Next fit.
+      Result   : CORRECT
+
+  [test_external_fragmentation]
+    unallocated
+      Input    : blocks 100,100; A=60 C=150
+      Expected : ('C',)
+      Actual   : ('C',)
+      Result   : CORRECT
+    (empty memory, largest empty block, external fragmentation)
+      Input    : blocks 100,100; A=60 C=150
+      Expected : (100, 100, 100)
+      Actual   : (100, 100, 100)
+      Result   : CORRECT
+
+  [test_internal_fragmentation]
+    internal fragmentation = (100-60) + (500-450)
+      Input    : blocks 100,500; A=60 B=450
+      Expected : 90
+      Actual   : 90
+      Result   : CORRECT
+    every block is filled, so no external fragmentation
+      Input    : blocks 100,500; A=60 B=450
+      Expected : 0
+      Actual   : 0
+      Result   : CORRECT
+
+  [test_large]
+    every process allocated or listed unallocated
+      Input    : 2000 random blocks, 2000 random processes, Best fit
+      Expected : 2000
+      Actual   : 2000
+      Result   : CORRECT
+    no block is used twice
+      Input    : same input
+      Expected : 2000
+      Actual   : 2000
+      Result   : CORRECT
+
+  [test_next_fit_resumes_after_last_placement]
+    First fit: block used by P2 (Next fit continues after block 2)
+      Input    : blocks 100,500,200,300,600; P1=212 P2=100
+      Expected : 1
+      Actual   : 1
+      Result   : CORRECT
+    Next fit: block used by P2 (Next fit continues after block 2)
+      Input    : blocks 100,500,200,300,600; P1=212 P2=100
+      Expected : 3
+      Actual   : 3
+      Result   : CORRECT
+
+  [test_one_process_per_block]
+    a block with room left is not shared: A and B use different blocks
+      Input    : blocks 500,200; A=100 B=100; First fit
+      Expected : [1, 2]
+      Actual   : [1, 2]
+      Result   : CORRECT
+    memory map (start, size, process or None for empty)
+      Input    : blocks 500,200; A=100 B=100; First fit
+      Expected : ((0, 500, 'A'), (500, 200, 'B'))
+      Actual   : ((0, 500, 'A'), (500, 200, 'B'))
+      Result   : CORRECT
+    second process cannot enter the occupied block
+      Input    : blocks 500; A=100 B=100
+      Expected : ('B',)
+      Actual   : ('B',)
+      Result   : CORRECT
+
+  [test_textbook]
+    First fit: process -> block number
+      Input    : blocks 100,500,200,300,600; processes P1=212 P2=417 P3=112 P4=426
+      Expected : {'P1': 2, 'P2': 5, 'P3': 3}
+      Actual   : {'P1': 2, 'P2': 5, 'P3': 3}
+      Result   : CORRECT
+    First fit: unallocated (P4 needs 426 but only 100, 300 are empty)
+      Input    : blocks 100,500,200,300,600; processes P1=212 P2=417 P3=112 P4=426
+      Expected : ('P4',)
+      Actual   : ('P4',)
+      Result   : CORRECT
+    Best fit: process -> block number
+      Input    : blocks 100,500,200,300,600; processes P1=212 P2=417 P3=112 P4=426
+      Expected : {'P1': 4, 'P2': 2, 'P3': 3, 'P4': 5}
+      Actual   : {'P1': 4, 'P2': 2, 'P3': 3, 'P4': 5}
+      Result   : CORRECT
+    Worst fit: process -> block number
+      Input    : blocks 100,500,200,300,600; processes P1=212 P2=417 P3=112 P4=426
+      Expected : {'P1': 5, 'P2': 2, 'P3': 4}
+      Actual   : {'P1': 5, 'P2': 2, 'P3': 4}
+      Result   : CORRECT
+    Worst fit: unallocated
+      Input    : blocks 100,500,200,300,600; processes P1=212 P2=417 P3=112 P4=426
+      Expected : ('P4',)
+      Actual   : ('P4',)
+      Result   : CORRECT
+
+==============================================================================
+FRAGMENTATIONCHART
+==============================================================================
+
+  [test_worksheet]
+    chart has one column per strategy
+      Input    : blocks 350,200,400,150,300,250; processes 180,120,290,140,220,100,275
+      Expected : ['First fit', 'Best fit', 'Next fit', 'Worst fit']
+      Actual   : ['First fit', 'Best fit', 'Next fit', 'Worst fit']
+      Result   : CORRECT
+    First fit: process -> block
+      Input    : blocks 350,200,400,150,300,250; processes 180,120,290,140,220,100,275
+      Expected : {'P1': 1, 'P2': 2, 'P3': 3, 'P4': 4, 'P5': 5, 'P6': 6}
+      Actual   : {'P1': 1, 'P2': 2, 'P3': 3, 'P4': 4, 'P5': 5, 'P6': 6}
+      Result   : CORRECT
+    Best fit: process -> block
+      Input    : blocks 350,200,400,150,300,250; processes 180,120,290,140,220,100,275
+      Expected : {'P1': 2, 'P2': 4, 'P3': 5, 'P4': 6, 'P5': 1, 'P6': 3}
+      Actual   : {'P1': 2, 'P2': 4, 'P3': 5, 'P4': 6, 'P5': 1, 'P6': 3}
+      Result   : CORRECT
+    Worst fit: process -> block
+      Input    : blocks 350,200,400,150,300,250; processes 180,120,290,140,220,100,275
+      Expected : {'P1': 3, 'P2': 1, 'P3': 5, 'P4': 6, 'P6': 2}
+      Actual   : {'P1': 3, 'P2': 1, 'P3': 5, 'P4': 6, 'P6': 2}
+      Result   : CORRECT
+    not placed (First, Best, Next, Worst)
+      Input    : blocks 350,200,400,150,300,250; processes 180,120,290,140,220,100,275
+      Expected : [('P7',), ('P7',), ('P7',), ('P5', 'P7')]
+      Actual   : [('P7',), ('P7',), ('P7',), ('P5', 'P7')]
+      Result   : CORRECT
+    every process has a colour; the chosen strategy is passed through
+      Input    : blocks 350,200,400,150,300,250; processes 180,120,290,140,220,100,275
+      Expected : (7, 'First fit')
+      Actual   : (7, 'First fit')
+      Result   : CORRECT
+    memory map of First fit (start, size, process or None)
+      Input    : blocks 350,200,400,150,300,250; processes 180,120,290,140,220,100,275
+      Expected : ((0, 350, 'P1'), (350, 200, 'P2'), (550, 400, 'P3'), (950, 150, 'P4'), (1100, 300,
+                  'P5'), (1400, 250, 'P6'))
+      Actual   : ((0, 350, 'P1'), (350, 200, 'P2'), (550, 400, 'P3'), (950, 150, 'P4'), (1100, 300,
+                  'P5'), (1400, 250, 'P6'))
+      Result   : CORRECT
+
+==============================================================================
+MULTIPROGRAMMING
+==============================================================================
+
+  [test_errors]
+    no jobs
+      Input    : empty list
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Enter at least one job.
+      Result   : CORRECT
+    zero burst
+      Input    : A(arrival 0, burst 0)
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Burst time for A must be greater than zero.
+      Result   : CORRECT
+    duplicate job IDs
+      Input    : A, A
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Job ID 'A' is repeated. Each entry must be unique.
+      Result   : CORRECT
+
+  [test_idle_gap]
+    events (time, event)
+      Input    : A(arrival 0, burst 1) and B(arrival 5, burst 2)
+      Expected : [(0, 'A arrives'), (1, 'A completes'), (5, 'B arrives'), (7, 'B completes')]
+      Actual   : [(0, 'A arrives'), (1, 'A completes'), (5, 'B arrives'), (7, 'B completes')]
+      Result   : CORRECT
+
+  [test_large]
+    completion events
+      Input    : 1000 random jobs
+      Expected : 1000
+      Actual   : 1000
+      Result   : CORRECT
+
+  [test_small]
+    events (time, event)
+      Input    : jobs A(arrival 0, burst 4) and B(arrival 0, burst 2), equal CPU share
+      Expected : [(0, 'A arrives'), (0, 'B arrives'), (4, 'B completes'), (6, 'A completes')]
+      Actual   : [(0, 'A arrives'), (0, 'B arrives'), (4, 'B completes'), (6.0, 'A completes')]
+      Result   : CORRECT
+    remaining work when B completes
+      Input    : jobs A(arrival 0, burst 4) and B(arrival 0, burst 2), equal CPU share
+      Expected : (('A', 2.0),)
+      Actual   : (('A', 2.0),)
+      Result   : CORRECT
+    remaining work after both arrive
+      Input    : jobs A(arrival 0, burst 4) and B(arrival 0, burst 2), equal CPU share
+      Expected : (('A', 4.0), ('B', 2.0))
+      Actual   : (('A', 4), ('B', 2))
+      Result   : CORRECT
+
+==============================================================================
+PAGEREPLACEMENT
+==============================================================================
+
+  [test_belady]
+    FIFO with 3 frames: faults
+      Input    : reference string 1,2,3,4,1,2,5,1,2,3,4,5
+      Expected : 9
+      Actual   : 9
+      Result   : CORRECT
+    FIFO with 4 frames: faults (Belady's anomaly, more frames = more faults)
+      Input    : reference string 1,2,3,4,1,2,5,1,2,3,4,5
+      Expected : 10
+      Actual   : 10
+      Result   : CORRECT
+
+  [test_clock]
+    decision at the fault (hand starts at frame 1)
+      Input    : reference string 1,2,3,1,4 with 3 frames
+      Expected : frame 1 (1): R=1 -> second chance (R cleared, hand moves on); frame 2 (2): R=0 ->
+                  replaced
+      Actual   : frame 1 (1): R=1 -> second chance (R cleared, hand moves on); frame 2 (2): R=0 ->
+                  replaced
+      Result   : CORRECT
+    final frames, replaced page and hand position (0-based frame index)
+      Input    : reference string 1,2,3,1,4 with 3 frames
+      Expected : ((1, 4, 3), 2, 2)
+      Actual   : ((1, 4, 3), 2, 2)
+      Result   : CORRECT
+    Clock and Second Chance: (faults, hits) on the classic string
+      Input    : reference string 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1 with 3 frames
+      Expected : ((11, 9), (11, 9))
+      Actual   : ((11, 9), (11, 9))
+      Result   : CORRECT
+
+  [test_edges]
+    same page repeated, one frame: faults
+      Input    : reference string 1,1,1 with 1 frame, LRU
+      Expected : 1
+      Actual   : 1
+      Result   : CORRECT
+    empty reference string
+      Input    : no references
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Enter at least one page reference.
+      Result   : CORRECT
+    zero frames
+      Input    : reference 1, 0 frames
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Frame count must be greater than zero.
+      Result   : CORRECT
+    negative page number
+      Input    : reference -1
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Page reference must be zero or greater.
+      Result   : CORRECT
+    unknown algorithm
+      Input    : algorithm MRU
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Choose one of: FIFO, LRU, Optimal, Second Chance, Clock, NRU, NFU,
+                  Random, Working Set.
+      Result   : CORRECT
+
+  [test_known_faults]
+    FIFO: (page faults, hits)
+      Input    : reference string 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1 with 3 frames
+      Expected : (15, 5)
+      Actual   : (15, 5)
+      Result   : CORRECT
+    LRU: (page faults, hits)
+      Input    : reference string 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1 with 3 frames
+      Expected : (12, 8)
+      Actual   : (12, 8)
+      Result   : CORRECT
+    Optimal: (page faults, hits)
+      Input    : reference string 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1 with 3 frames
+      Expected : (9, 11)
+      Actual   : (9, 11)
+      Result   : CORRECT
+
+  [test_large]
+    Second Chance: every reference is a hit or a fault
+      Input    : 20000 random references (pages 0-100), 10 frames
+      Expected : 20000
+      Actual   : 20000
+      Result   : CORRECT
+    Optimal never has more faults than FIFO or LRU
+      Input    : 20000 random references (pages 0-100), 10 frames; FIFO 18047, LRU 18053, Optimal
+                  12998 faults
+      Expected : True
+      Actual   : True
+      Result   : CORRECT
+
+  [test_nfu]
+    tick every 2: counters 1->2, 2->1, 3->1; tie between 2 and 3 goes to the older page 2
+      Input    : reference string 1,2,1,3,4 with 3 frames, tick 2
+      Expected : (2, (1, 4, 3), ('R0 C2', 'R1 C0', 'R0 C1'))
+      Actual   : (2, (1, 4, 3), ('R0 C2', 'R1 C0', 'R0 C1'))
+      Result   : CORRECT
+    no tick: all counters stay 0, so the oldest page (1) is replaced
+      Input    : reference string 1,2,1,3,4 with 3 frames, tick 0
+      Expected : (1, (4, 2, 3))
+      Actual   : (1, (4, 2, 3))
+      Result   : CORRECT
+
+  [test_nru]
+    clock tick before reference 4: page 3 is the only class-0 page (not used, not written), so it is replaced
+      Input    : reference string 1W,2,3,2,4 with 3 frames, tick every 3
+      Expected : (3, (1, 2, 4), ('R0M1', 'R1M0', 'R1M0'))
+      Actual   : (3, (1, 2, 4), ('R0M1', 'R1M0', 'R1M0'))
+      Result   : CORRECT
+    a written page is never chosen while lower classes exist: 1W is class 3, 2 and 3 are class 2
+      Input    : reference string 1W,2,3,4 with 3 frames, no tick
+      Expected : True
+      Actual   : True
+      Result   : CORRECT
+    the pick is random inside the lowest class: over many seeds both class-2 pages are chosen
+      Input    : reference string 1W,2,3,4 with 3 frames, seeds 0-29
+      Expected : {2, 3}
+      Actual   : {2, 3}
+      Result   : CORRECT
+    all pages in the same class: any of the three can be chosen
+      Input    : reference string 1,2,3,4 with 3 frames, seeds 0-59
+      Expected : {1, 2, 3}
+      Actual   : {1, 2, 3}
+      Result   : CORRECT
+    same input and seed give the same result
+      Input    : reference string 1,2,3,4 with 3 frames, seed 7
+      Expected : (2, (1, 4, 3), ('R1M0', 'R1M0', 'R1M0'))
+      Actual   : (2, (1, 4, 3), ('R1M0', 'R1M0', 'R1M0'))
+      Result   : CORRECT
+    Decision column names the lowest class and its pages, and the replaced page is one of them
+      Input    : reference string 1,2,3,2,4 with 3 frames, tick every 3
+      Expected : (True, True)
+      Actual   : (True, True)
+      Result   : CORRECT
+    read/write flags must match the references
+      Input    : 2 references, 1 flag
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Every page reference needs a read/write flag.
+      Result   : CORRECT
+    negative clock tick
+      Input    : tick -1
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Clock tick / window size must be zero or greater.
+      Result   : CORRECT
+
+  [test_optimal_takes_first_unused_frame]
+    Optimal tie-break: final frames
+      Input    : reference string 1,2,3,4 with 3 frames (1,2,3 never used again)
+      Expected : (4, 2, 3)
+      Actual   : (4, 2, 3)
+      Result   : CORRECT
+
+  [test_random]
+    same input and seed give the same result
+      Input    : reference string 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1 with 3 frames
+      Expected : True
+      Actual   : True
+      Result   : CORRECT
+    every reference is a hit or a fault, and the referenced page is in a frame after every step
+      Input    : reference string 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1 with 3 frames
+      Expected : True
+      Actual   : True
+      Result   : CORRECT
+    Random never beats Optimal
+      Input    : reference string 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1 with 3 frames
+      Expected : True
+      Actual   : True
+      Result   : CORRECT
+
+  [test_second_chance]
+    Second Chance: (page faults, hits)
+      Input    : reference string 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1 with 3 frames
+      Expected : (11, 9)
+      Actual   : (11, 9)
+      Result   : CORRECT
+    Second Chance: frames after the first 8 references
+      Input    : reference string 7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1 with 3 frames
+      Expected : [(7, None, None), (7, 0, None), (7, 0, 1), (2, 0, 1), (2, 0, 1), (2, 0, 3), (2, 0,
+                  3), (4, 0, 3)]
+      Actual   : [(7, None, None), (7, 0, None), (7, 0, 1), (2, 0, 1), (2, 0, 1), (2, 0, 3), (2, 0,
+                  3), (4, 0, 3)]
+      Result   : CORRECT
+    page 1 was used again, so it is skipped and page 2 is replaced (FIFO would replace page 1)
+      Input    : reference string 1,2,3,1,4 with 3 frames
+      Expected : (2, (1, 4, 3))
+      Actual   : (2, (1, 4, 3))
+      Result   : CORRECT
+    every page used: all get a second chance, then the oldest is replaced
+      Input    : reference string 1,2,3,1,2,3,4 with 3 frames
+      Expected : (1, (4, 2, 3))
+      Actual   : (1, (4, 2, 3))
+      Result   : CORRECT
+
+  [test_second_chance_decision_column]
+    R bit of every frame after the hit on page 1 (R=1) and after the fault on 4
+      Input    : reference string 1,2,3,1,4 with 3 frames
+      Expected : (('R1', 'R0', 'R0'), ('R0', 'R0', 'R0'))
+      Actual   : (('R1', 'R0', 'R0'), ('R0', 'R0', 'R0'))
+      Result   : CORRECT
+    decision at the fault: R=1 gets another chance, R=0 is replaced
+      Input    : reference string 1,2,3,1,4 with 3 frames
+      Expected : 1: R=1 -> second chance (R cleared, moved to back); 2: R=0 -> replaced
+      Actual   : 1: R=1 -> second chance (R cleared, moved to back); 2: R=0 -> replaced
+      Result   : CORRECT
+
+  [test_working_set]
+    window 2: pages 1 and 2 are outside the working set; frame order picks 1
+      Input    : reference string 1,2,3,1,3,3,3,4 with 3 frames, window 2
+      Expected : (1, (4, 2, 3))
+      Actual   : (1, (4, 2, 3))
+      Result   : CORRECT
+    LRU on the same references replaces 2 instead
+      Input    : reference string 1,2,3,1,3,3,3,4 with 3 frames
+      Expected : (2, (1, 4, 3))
+      Actual   : (2, (1, 4, 3))
+      Result   : CORRECT
+    window 10: every page is in the working set, so the oldest (1) is replaced
+      Input    : reference string 1,2,3,4 with 3 frames, window 10
+      Expected : (1, (4, 2, 3))
+      Actual   : (1, (4, 2, 3))
+      Result   : CORRECT
+    Working Set needs a window
+      Input    : window 0
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Working Set window size must be greater than zero.
+      Result   : CORRECT
+
+==============================================================================
+PAGING
+==============================================================================
+
+  [test_boundary_and_errors]
+    address 0 -> frame 3 x 10
+      Input    : page size 10, {0:3}, address 0
+      Expected : 30
+      Actual   : 30
+      Result   : CORRECT
+    unmapped page = page fault (no physical address)
+      Input    : page size 10, {0:3}, address 10
+      Expected : None
+      Actual   : None
+      Result   : CORRECT
+    (pages, frames, physical) with memory sizes
+      Input    : page size 10, {0:3}, address 5, logical 100, physical 50
+      Expected : (10, 5, 35)
+      Actual   : (10, 5, 35)
+      Result   : CORRECT
+    frame outside physical memory
+      Input    : page size 10, {0:9}, address 5, logical 100, physical 50
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Frame number must be between 0 and 4.
+      Result   : CORRECT
+    address outside logical memory
+      Input    : page size 10, {0:1}, address 100, logical 100
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Logical address must be a whole number between 0 and 99.
+      Result   : CORRECT
+    page size larger than physical memory
+      Input    : page size 60, physical 50
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Page size must be smaller than both memory sizes.
+      Result   : CORRECT
+    zero page size
+      Input    : page size 0
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Page size must be greater than zero.
+      Result   : CORRECT
+    negative address
+      Input    : address -1
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Logical address must be zero or greater.
+      Result   : CORRECT
+    duplicate page numbers
+      Input    : {0:3, 0:4}
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Page number '0' is repeated. Each entry must be unique.
+      Result   : CORRECT
+
+  [test_translate]
+    (page, offset, frame, physical address)
+      Input    : page size 1024, page table {0:5, 1:2}, logical address 1030
+      Expected : (1, 6, 2, 2054)
+      Actual   : (1, 6, 2, 2054)
+      Result   : CORRECT
+
+==============================================================================
+SCHEDULING
+==============================================================================
+
+  [test_decimal_has_no_float_drift]
+    FCFS: (C completion, CPU utilization)
+      Input    : A(0, 0.1) B(0, 0.2) C(0.3, 0.1)
+      Expected : (0.4, 100.0)
+      Actual   : (0.4, 100.0)
+      Result   : CORRECT
+
+  [test_decimal_times]
+    SRTF (preemptive): completion times with decimal arrivals and bursts
+      Input    : A(arr 0, burst 3, pri 1) B(0.5, 1, 5) C(1.2, 0.7, 3); quantum 0.5
+      Expected : [4.7, 1.5, 2.2]
+      Actual   : [4.7, 1.5, 2.2]
+      Result   : CORRECT
+    Priority (preemptive): completion times with decimal arrivals and bursts
+      Input    : A(arr 0, burst 3, pri 1) B(0.5, 1, 5) C(1.2, 0.7, 3); quantum 0.5
+      Expected : [4.7, 1.5, 2.2]
+      Actual   : [4.7, 1.5, 2.2]
+      Result   : CORRECT
+    Round Robin: completion times with decimal arrivals and bursts
+      Input    : A(arr 0, burst 3, pri 1) B(0.5, 1, 5) C(1.2, 0.7, 3); quantum 0.5
+      Expected : [4.7, 2, 3.2]
+      Actual   : [4.7, 2, 3.2]
+      Result   : CORRECT
+    FCFS: completion times with decimal arrivals and bursts
+      Input    : A(arr 0, burst 3, pri 1) B(0.5, 1, 5) C(1.2, 0.7, 3); quantum 0.5
+      Expected : [3, 4, 4.7]
+      Actual   : [3, 4, 4.7]
+      Result   : CORRECT
+    SRTF: B arriving at 0.5 preempts A (timeline start, end, process)
+      Input    : A(arr 0, burst 3, pri 1) B(0.5, 1, 5) C(1.2, 0.7, 3); quantum 0.5
+      Expected : [(0, 0.5, 'A'), (0.5, 1.5, 'B'), (1.5, 2.2, 'C'), (2.2, 4.7, 'A')]
+      Actual   : [(0, 0.5, 'A'), (0.5, 1.5, 'B'), (1.5, 2.2, 'C'), (2.2, 4.7, 'A')]
+      Result   : CORRECT
+    SRTF: average waiting time
+      Input    : A(arr 0, burst 3, pri 1) B(0.5, 1, 5) C(1.2, 0.7, 3); quantum 0.5
+      Expected : 0.6667
+      Actual   : 0.6667
+      Result   : CORRECT
+
+  [test_errors]
+    empty process list
+      Input    : no processes
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Add at least one process before running the scheduler.
+      Result   : CORRECT
+    negative arrival time
+      Input    : A(arrival -1, burst 2)
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Arrival time for A must be zero or greater.
+      Result   : CORRECT
+    zero burst time
+      Input    : A(arrival 0, burst 0)
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Burst time for A must be greater than zero.
+      Result   : CORRECT
+    duplicate process IDs
+      Input    : A, A
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Process ID 'A' is repeated. Each entry must be unique.
+      Result   : CORRECT
+    zero time quantum
+      Input    : P1(arr 0, burst 5, pri 2) P2(1,3,1) P3(2,8,3) P4(3,6,2); higher priority number =
+                  higher priority; quantum 0
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Time quantum must be greater than zero.
+      Result   : CORRECT
+
+  [test_idle_gap]
+    CPU idles until the process arrives: completion time
+      Input    : A(arrival 5, burst 2)
+      Expected : 7
+      Actual   : 7
+      Result   : CORRECT
+
+  [test_known_averages]
+    FCFS: average (waiting, turnaround)
+      Input    : P1(arr 0, burst 5, pri 2) P2(1,3,1) P3(2,8,3) P4(3,6,2); higher priority number =
+                  higher priority; quantum 2
+      Expected : (5.75, 11.25)
+      Actual   : (5.75, 11.25)
+      Result   : CORRECT
+    SJF (non-preemptive): average (waiting, turnaround)
+      Input    : P1(arr 0, burst 5, pri 2) P2(1,3,1) P3(2,8,3) P4(3,6,2); higher priority number =
+                  higher priority; quantum 2
+      Expected : (5.25, 10.75)
+      Actual   : (5.25, 10.75)
+      Result   : CORRECT
+    SRTF (preemptive): average (waiting, turnaround)
+      Input    : P1(arr 0, burst 5, pri 2) P2(1,3,1) P3(2,8,3) P4(3,6,2); higher priority number =
+                  higher priority; quantum 2
+      Expected : (5.0, 10.5)
+      Actual   : (5.0, 10.5)
+      Result   : CORRECT
+    Priority (non-preemptive): average (waiting, turnaround)
+      Input    : P1(arr 0, burst 5, pri 2) P2(1,3,1) P3(2,8,3) P4(3,6,2); higher priority number =
+                  higher priority; quantum 2
+      Expected : (7.75, 13.25)
+      Actual   : (7.75, 13.25)
+      Result   : CORRECT
+    Priority (preemptive): average (waiting, turnaround)
+      Input    : P1(arr 0, burst 5, pri 2) P2(1,3,1) P3(2,8,3) P4(3,6,2); higher priority number =
+                  higher priority; quantum 2
+      Expected : (9.0, 14.5)
+      Actual   : (9.0, 14.5)
+      Result   : CORRECT
+    Round Robin: average (waiting, turnaround)
+      Input    : P1(arr 0, burst 5, pri 2) P2(1,3,1) P3(2,8,3) P4(3,6,2); higher priority number =
+                  higher priority; quantum 2
+      Expected : (9.75, 15.25)
+      Actual   : (9.75, 15.25)
+      Result   : CORRECT
+
+  [test_large]
+    FCFS: large run
+      Input    : 1000 random processes, quantum 3
+      Expected : 1000 rows, no negative waiting time
+      Actual   : 1000 rows, no negative waiting time
+      Result   : CORRECT
+    SJF (non-preemptive): large run
+      Input    : 1000 random processes, quantum 3
+      Expected : 1000 rows, no negative waiting time
+      Actual   : 1000 rows, no negative waiting time
+      Result   : CORRECT
+    SRTF (preemptive): large run
+      Input    : 1000 random processes, quantum 3
+      Expected : 1000 rows, no negative waiting time
+      Actual   : 1000 rows, no negative waiting time
+      Result   : CORRECT
+    Priority (preemptive): large run
+      Input    : 1000 random processes, quantum 3
+      Expected : 1000 rows, no negative waiting time
+      Actual   : 1000 rows, no negative waiting time
+      Result   : CORRECT
+    Round Robin: large run
+      Input    : 1000 random processes, quantum 3
+      Expected : 1000 rows, no negative waiting time
+      Actual   : 1000 rows, no negative waiting time
+      Result   : CORRECT
+
+==============================================================================
+SEGMENTATION
+==============================================================================
+
+  [test_large]
+    segment 4999, offset 99: physical address
+      Input    : 5000 segments, each limit 100, base = number x 100
+      Expected : 499999
+      Actual   : 499999
+      Result   : CORRECT
+
+  [test_out_of_range]
+    offset equal to the limit
+      Input    : segments {0: base 1000 limit 400, 1: base 6000 limit 100}; segment 1, offset 100
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Address fault: offset 100 is outside segment 1 (limit 100).
+      Result   : CORRECT
+    segment does not exist
+      Input    : segments {0: base 1000 limit 400, 1: base 6000 limit 100}; segment 7
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Segment 7 does not exist.
+      Result   : CORRECT
+    negative offset
+      Input    : segments {0: base 1000 limit 400, 1: base 6000 limit 100}; segment 0, offset -1
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Offset must be zero or greater.
+      Result   : CORRECT
+    empty segment table
+      Input    : no segments
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Enter at least one segment.
+      Result   : CORRECT
+    zero limit
+      Input    : segment 0: base 0 limit 0
+      Expected : ValueError (input refused)
+      Actual   : ValueError: The limit for segment 0 must be greater than zero.
+      Result   : CORRECT
+
+  [test_ram_and_overlap]
+    memory map for 8000 RAM
+      Input    : segments {0: base 1000 limit 400, 1: base 6000 limit 100}
+      Expected : ((0, 1000, 'Free'), (1000, 1400, 'Segment 0'), (1400, 6000, 'Free'), (6000, 6100,
+                  'Segment 1'), (6100, 8000, 'Free'))
+      Actual   : ((0, 1000, 'Free'), (1000, 1400, 'Segment 0'), (1400, 6000, 'Free'), (6000, 6100,
+                  'Segment 1'), (6100, 8000, 'Free'))
+      Result   : CORRECT
+    segment does not fit in RAM
+      Input    : segments {0: base 1000 limit 400, 1: base 6000 limit 100}; RAM size 6050
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Segment 1 must fit inside RAM.
+      Result   : CORRECT
+    overlapping segments
+      Input    : segment 0: base 0 limit 100, segment 1: base 50 limit 100
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Segment 1 overlaps segment 0.
+      Result   : CORRECT
+
+  [test_valid]
+    segment 1, offset 99: physical address
+      Input    : segments {0: base 1000 limit 400, 1: base 6000 limit 100}
+      Expected : 6099
+      Actual   : 6099
+      Result   : CORRECT
+
+==============================================================================
+TIMEPARSING
+==============================================================================
+
+  [test_decimal_and_units]
+    time '5' -> (minutes or units, has unit suffix)
+      Input    : text '5'
+      Expected : (5, False)
+      Actual   : (Fraction(5, 1), False)
+      Result   : CORRECT
+    time '0.5' -> (minutes or units, has unit suffix)
+      Input    : text '0.5'
+      Expected : (Fraction(1, 2), False)
+      Actual   : (Fraction(1, 2), False)
+      Result   : CORRECT
+    time '.5' -> (minutes or units, has unit suffix)
+      Input    : text '.5'
+      Expected : (Fraction(1, 2), False)
+      Actual   : (Fraction(1, 2), False)
+      Result   : CORRECT
+    time '1.5 hr/s' -> (minutes or units, has unit suffix)
+      Input    : text '1.5 hr/s'
+      Expected : (90, True)
+      Actual   : (Fraction(90, 1), True)
+      Result   : CORRECT
+    time '2 min/s' -> (minutes or units, has unit suffix)
+      Input    : text '2 min/s'
+      Expected : (2, True)
+      Actual   : (Fraction(2, 1), True)
+      Result   : CORRECT
+    time '0.25 hr/s' -> (minutes or units, has unit suffix)
+      Input    : text '0.25 hr/s'
+      Expected : (15, True)
+      Actual   : (Fraction(15, 1), True)
+      Result   : CORRECT
+
+  [test_errors]
+    invalid time ''
+      Input    : text ''
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Time must be a number (decimals allowed, like 0.5), optionally followed
+                  by hr/s or min/s (for example, 2 hr/s or 30 min/s).
+      Result   : CORRECT
+    invalid time 'abc'
+      Input    : text 'abc'
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Time must be a number (decimals allowed, like 0.5), optionally followed
+                  by hr/s or min/s (for example, 2 hr/s or 30 min/s).
+      Result   : CORRECT
+    invalid time '-1'
+      Input    : text '-1'
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Time must be a number (decimals allowed, like 0.5), optionally followed
+                  by hr/s or min/s (for example, 2 hr/s or 30 min/s).
+      Result   : CORRECT
+    invalid time '1,5'
+      Input    : text '1,5'
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Time must be a number (decimals allowed, like 0.5), optionally followed
+                  by hr/s or min/s (for example, 2 hr/s or 30 min/s).
+      Result   : CORRECT
+    invalid time '1..5'
+      Input    : text '1..5'
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Time must be a number (decimals allowed, like 0.5), optionally followed
+                  by hr/s or min/s (for example, 2 hr/s or 30 min/s).
+      Result   : CORRECT
+    invalid time '5 days'
+      Input    : text '5 days'
+      Expected : ValueError (input refused)
+      Actual   : ValueError: Time must be a number (decimals allowed, like 0.5), optionally followed
+                  by hr/s or min/s (for example, 2 hr/s or 30 min/s).
+      Result   : CORRECT
+
+==============================================================================
+166 of 166 checks CORRECT | 49 of 49 tests passed

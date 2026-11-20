@@ -15,13 +15,13 @@ To work on the code, install [Visual Studio Code](https://code.visualstudio.com/
 
 - CPU Scheduling: FCFS, non-preemptive SJF, preemptive SRTF, priority, and Round Robin, with response-time metrics
 - Banker's Algorithm: need and available resources, safe-state check, safe sequence, and optional tentative resource requests
-- Paging and Page Replacement: page mapping, address translation, FIFO, LRU, and Optimal
+- Paging and Page Replacement: page mapping, address translation, FIFO, LRU, Optimal, Second Chance, Clock, NRU, NFU, Random, and Working Set
 - Segmentation: segment-table checks and logical-address translation
-- Fragmentation: First Fit, Best Fit, Next Fit, and Worst Fit
+- Fragmentation: First Fit, Best Fit, Next Fit, and Worst Fit (one process per block)
 - Disk Scheduling: FCFS, SSTF, SCAN (Elevator), C-SCAN, LOOK, and C-LOOK
 - Multiprogramming: equal-share CPU sharing among active jobs
 
-The CPU scheduling page shows a time-scaled Gantt chart with individual process blocks and boundary times in the simulation output. CPU Scheduling and Multiprogramming accept times such as `2 hr/s` or `30 min/s`; when a suffix is used, bare time values are interpreted as minutes.
+The CPU scheduling page shows a time-scaled Gantt chart with individual process blocks and boundary times in the simulation output. CPU Scheduling and Multiprogramming accept decimal times such as `0.5` and suffixed times such as `2 hr/s` or `30 min/s`; when a suffix is used, bare time values are interpreted as minutes.
 
 ## Algorithm descriptions and sample runs
 
@@ -44,8 +44,8 @@ Sample: size 1024, table `0,5 / 1,2`, address 1030 → page 1, offset 6, frame 2
 ![Paging](docs/paging.png)
 
 ### 4. Page Replacement
-**Input:** reference string, number of frames, FIFO / LRU / Optimal. **Process:** on a fault with full frames, FIFO evicts the oldest loaded page, LRU the least recently used, Optimal the page used farthest in the future. **Output:** frame contents per step, hit/fault per step, totals and fault rate.
-Sample: `7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1`, 3 frames → FIFO 15, LRU 12, Optimal 9 faults.
+**Input:** reference string, number of frames, an algorithm, and a clock tick / window size (add `W` after a page, like `0W`, to mark a write). **Process:** on a fault with full frames the algorithm picks a victim: **FIFO** the oldest loaded page; **LRU** the least recently used; **Optimal** the page used farthest in the future; **Second Chance** is FIFO with a reference bit R: the oldest page is checked, R=1 means it gets another chance (R cleared, moved to the back) and R=0 means it is replaced; **Clock** makes the same decisions as Second Chance, but the frames that are candidates for replacement are treated as a circular buffer with a hand (▶); **NRU** (Not Recently Used) keeps R (referenced since the last clock tick) and M (modified) per page and puts each page in a class, class = 2R + M (0 = not referenced, not modified; 1 = not referenced, modified; 2 = referenced, not modified; 3 = referenced, modified); a random page from the lowest non-empty class is replaced; **NFU** keeps a counter per page, adds R to it at every clock tick, and replaces the lowest counter (oldest page on a tie); **Random** replaces a random frame; **Working Set**: the set of pages a process is currently using is its working set (pages used within the last N references, the window); on a page fault a page that is not in the working set is evicted (the first such page in frame order), or the oldest page if every page is in the working set. Random and NRU use a fixed seed, so a run always gives the same result. The clock tick clears the R bits for NRU and NFU every N references. **Output:** frame contents per step (with R / M / counter bits where the algorithm uses them), a Decision column for the bit-based algorithms, hit/fault per step, totals and fault rate.
+Sample: `7,0,1,2,0,3,0,4,2,3,0,3,2,1,2,0,1,7,0,1`, 3 frames → FIFO 15, LRU 12, Optimal 9, Second Chance 11, Clock 11 faults.
 ![Page Replacement: FIFO](docs/page-replacement.png)
 ![Page Replacement: LRU](docs/page-replacement-lru.png)
 ![Page Replacement: Optimal](docs/page-replacement-optimal.png)
@@ -56,9 +56,10 @@ Sample: segment 1 (base 6300, limit 400), offset 99 → 6399; offset 400 → err
 ![Segmentation](docs/segmentation.png)
 
 ### 6. Fragmentation
-**Input:** memory block sizes, processes (`ID,size`), fixed or variable partitions, First/Best/Next/Worst fit. **Process:** each process takes the block chosen by the strategy; fixed partitions waste the rest of the block (internal), variable partitions split it and leave holes (external). **Output:** allocation table, unallocated processes, internal waste or free holes and external fragmentation.
+**Input:** memory block sizes, processes (`ID,size`) and First/Best/Next/Worst fit. **Process:** each block holds one process; a process takes the empty block chosen by the strategy and is never put into an occupied block. First fit takes the first empty block that fits, Best fit the smallest, Worst fit the largest, Next fit continues after the last placement. Unused space inside a filled block is internal fragmentation; empty blocks left over while a process cannot be placed are external fragmentation. **Output:** allocation table, memory map (filled and empty blocks), unallocated processes, internal and external fragmentation, plus a colour-coded chart that draws First, Best, Next and Worst fit side by side on the same input (each block to scale, one colour per process, grey for empty blocks).
 Sample: blocks `100,500,200,300,600`, processes `212,417,112,426` → First fit leaves P4 unallocated, Best fit places all four.
 ![Fragmentation: First fit](docs/fragmentation.png)
+![Fragmentation memory map: every strategy side by side](docs/fragmentation-memory-map.png)
 ![Fragmentation: Best fit](docs/fragmentation-best-fit.png)
 ![Fragmentation: Next fit](docs/fragmentation-next-fit.png)
 
@@ -79,7 +80,7 @@ Sample: `A,0,4 / B,0,2` → B completes at 4, A at 6.
 
 ## Testing
 
-`python -m unittest discover tests` runs 30 tests: known textbook answers, boundary and error cases, and one large dataset per module (hundreds to 20,000 items). Output is saved in `docs/test-results.txt`.
+`python tests/test_algorithms.py` runs 49 tests (166 checks) and prints each input, expected answer, actual answer and CORRECT / WRONG (`python -m unittest discover tests` gives a plain pass/fail run): known textbook answers, boundary and error cases, and one large dataset per module (hundreds to 20,000 items). Output is saved in `docs/test-results.txt`; every test is described in [`docs/unit-tests.md`](docs/unit-tests.md).
 
 ## Project team
 
